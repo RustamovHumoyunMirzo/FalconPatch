@@ -1,27 +1,20 @@
 # FalconPatch
 
-A command-line Android testing tool that loads developer-provided native `.so` modules or Lua scripts into an authorized application.
-
-## Build
-
-```sh
-cmake -S . -B build
-cmake --build build
-```
+A command-line Android testing tool that loads developer-provided native `.so` modules or Lua scripts into an authorized application. You can get started with [docs/BUILD.md](docs/BUILD.md)
 
 ## Features
 
-### Inspect An APK
+### Inspect APKs
 
 ```sh
 fpatch inspect --source app.apk
 fpatch inspect --source app.apk --ndk
 ```
 
-The inspect command reports APK structure, manifest metadata, debug/test flags,
-certificate hash, signature schemes, DEX/native code inventory, and FalconPatch
-bootstrap strategy hints. Add `--ndk` to print an advanced native-only report
-with ABIs, `.so` entries, ZIP compression, ELF bitness, and ELF machine checks.
-The normal code report also includes Java/Kotlin-to-NDK usage: `System.load` /
-`System.loadLibrary` calls and declared `native` methods with parameters and
-return types where they can be recovered from DEX metadata.
+`inspect` previews APK metadata, signing, DEX/native inventory, Java/Kotlin to
+NDK calls, and FalconPatch bootstrap readiness. Use `--ndk` for a focused native
+library report.
+
+---
+
+See [documentation](docs/COMMANDS.md) for the full command reference.
