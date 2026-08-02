@@ -15,8 +15,10 @@ cmake --build build
 
 ```sh
 fpatch inspect --source app.apk
+fpatch inspect --source app.apk --ndk
 ```
 
 The inspect command reports APK structure, manifest metadata, debug/test flags,
 certificate hash, signature schemes, DEX/native code inventory, and FalconPatch
-bootstrap strategy hints.
+bootstrap strategy hints. Add `--ndk` to print an advanced native-only report
+with ABIs, `.so` entries, ZIP compression, ELF bitness, and ELF machine checks.

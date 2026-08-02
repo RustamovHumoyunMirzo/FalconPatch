@@ -14,6 +14,18 @@
 #define APK_SIG_V2 0x7109871au
 #define APK_SIG_V3 0xf05368c0u
 #define APK_SIG_V31 0x1b93ad61u
+#define MAX_NATIVE_LIBS 512
+
+typedef struct {
+    char path[512];
+    char abi[32];
+    unsigned long long size;
+    unsigned long long compressed_size;
+    zip_uint16_t compression_method;
+    uint16_t elf_machine;
+    int elf_class;
+    int elf_valid;
+} NativeLib;
 
 typedef struct {
     char **items;
@@ -43,6 +55,7 @@ typedef struct {
     int sig_v2;
     int sig_v3;
     int sig_v31;
+    NativeLib native_libs[MAX_NATIVE_LIBS];
     char abis[16][32];
     size_t abi_count;
     unsigned char cert_sha256[32];
@@ -56,6 +69,8 @@ typedef struct {
     unsigned char data[64];
     size_t data_len;
 } Sha256;
+
+static int read_zip_entry(zip_t *apk, const char *name, unsigned char **data, size_t *size);
 
 static uint16_t read_u16(const unsigned char *p) {
     return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
@@ -137,6 +152,76 @@ static int contains_text(const char *value, const char *needle) {
     return strstr(value, needle) != NULL;
 }
 
+static const char *compression_method_name(zip_uint16_t method) {
+    switch (method) {
+    case ZIP_CM_STORE:
+        return "stored";
+    case ZIP_CM_DEFLATE:
+        return "deflated";
+    default:
+        return "other";
+    }
+}
+
+static const char *elf_machine_name(uint16_t machine) {
+    switch (machine) {
+    case 3:
+        return "x86";
+    case 40:
+        return "armeabi-v7a";
+    case 62:
+        return "x86_64";
+    case 183:
+        return "arm64-v8a";
+    default:
+        return "unknown";
+    }
+}
+
+static void parse_elf_header(NativeLib *lib, const unsigned char *data, size_t size) {
+    if (size < 20 || data[0] != 0x7f || data[1] != 'E' ||
+        data[2] != 'L' || data[3] != 'F') {
+        return;
+    }
+
+    lib->elf_valid = 1;
+    lib->elf_class = data[4] == 2 ? 64 : data[4] == 1 ? 32 : 0;
+    if (data[5] == 1) {
+        lib->elf_machine = read_u16(data + 18);
+    } else if (data[5] == 2) {
+        lib->elf_machine = (uint16_t)data[19] | ((uint16_t)data[18] << 8);
+    }
+}
+
+static void get_abi_from_lib_path(const char *entry_name, char *abi, size_t abi_size) {
+    const char *start;
+    const char *end;
+    size_t len;
+
+    if (abi_size == 0) {
+        return;
+    }
+    abi[0] = '\0';
+
+    if (!starts_with(entry_name, "lib/")) {
+        return;
+    }
+
+    start = entry_name + 4;
+    end = strchr(start, '/');
+    if (!end) {
+        return;
+    }
+
+    len = (size_t)(end - start);
+    if (len == 0 || len >= abi_size) {
+        return;
+    }
+
+    memcpy(abi, start, len);
+    abi[len] = '\0';
+}
+
 static void normalize_application_class(ManifestInfo *manifest) {
     char normalized[256];
 
@@ -156,29 +241,13 @@ static void normalize_application_class(ManifestInfo *manifest) {
 }
 
 static void add_abi(ApkInfo *info, const char *entry_name) {
-    const char *start;
-    const char *end;
     char abi[32];
-    size_t len;
     size_t i;
 
-    if (!starts_with(entry_name, "lib/")) {
+    get_abi_from_lib_path(entry_name, abi, sizeof(abi));
+    if (!abi[0]) {
         return;
     }
-
-    start = entry_name + 4;
-    end = strchr(start, '/');
-    if (!end) {
-        return;
-    }
-
-    len = (size_t)(end - start);
-    if (len == 0 || len >= sizeof(abi)) {
-        return;
-    }
-
-    memcpy(abi, start, len);
-    abi[len] = '\0';
 
     for (i = 0; i < info->abi_count; i++) {
         if (strcmp(info->abis[i], abi) == 0) {
@@ -188,6 +257,43 @@ static void add_abi(ApkInfo *info, const char *entry_name) {
 
     if (info->abi_count < 16) {
         set_text(info->abis[info->abi_count++], sizeof(info->abis[0]), abi);
+    }
+}
+
+static void add_native_lib(ApkInfo *info, zip_t *apk, zip_uint64_t index, const char *entry_name) {
+    NativeLib *lib;
+    zip_stat_t st;
+    unsigned char *data;
+    size_t data_size;
+
+    info->native_lib_count++;
+    add_abi(info, entry_name);
+
+    if (info->native_lib_count > MAX_NATIVE_LIBS) {
+        return;
+    }
+
+    lib = &info->native_libs[info->native_lib_count - 1];
+    memset(lib, 0, sizeof(*lib));
+    set_text(lib->path, sizeof(lib->path), entry_name);
+    get_abi_from_lib_path(entry_name, lib->abi, sizeof(lib->abi));
+
+    zip_stat_init(&st);
+    if (zip_stat_index(apk, index, 0, &st) == 0) {
+        if (st.valid & ZIP_STAT_SIZE) {
+            lib->size = (unsigned long long)st.size;
+        }
+        if (st.valid & ZIP_STAT_COMP_SIZE) {
+            lib->compressed_size = (unsigned long long)st.comp_size;
+        }
+        if (st.valid & ZIP_STAT_COMP_METHOD) {
+            lib->compression_method = st.comp_method;
+        }
+    }
+
+    if (read_zip_entry(apk, entry_name, &data, &data_size)) {
+        parse_elf_header(lib, data, data_size);
+        free(data);
     }
 }
 
@@ -762,8 +868,7 @@ static int inspect_apk(const char *apk_path, ApkInfo *info) {
         } else if (starts_with(name, "classes") && ends_with(name, ".dex")) {
             info->dex_count++;
         } else if (starts_with(name, "lib/") && ends_with(name, ".so")) {
-            info->native_lib_count++;
-            add_abi(info, name);
+            add_native_lib(info, apk, (zip_uint64_t)i, name);
         } else if (starts_with(name, "META-INF/") &&
                    (ends_with(name, ".RSA") || ends_with(name, ".DSA") || ends_with(name, ".EC"))) {
             if (!info->has_cert) {
@@ -887,12 +992,92 @@ static void print_report(const ApkInfo *info) {
     printf("  Bootstrap APK patch: %s\n", info->has_manifest ? "available" : "unavailable");
 }
 
+static void print_ndk_report(const ApkInfo *info) {
+    int has_64 = 0;
+    int has_32 = 0;
+    int compressed_libs = 0;
+    int missing_elf = 0;
+    int abi_header_mismatches = 0;
+    int printed = info->native_lib_count < MAX_NATIVE_LIBS ?
+                  info->native_lib_count : MAX_NATIVE_LIBS;
+
+    for (int i = 0; i < printed; i++) {
+        const NativeLib *lib = &info->native_libs[i];
+        const char *machine_abi = elf_machine_name(lib->elf_machine);
+
+        if (strcmp(lib->abi, "arm64-v8a") == 0 || strcmp(lib->abi, "x86_64") == 0) {
+            has_64 = 1;
+        } else if (lib->abi[0]) {
+            has_32 = 1;
+        }
+
+        if (lib->compression_method == ZIP_CM_DEFLATE) {
+            compressed_libs++;
+        }
+        if (!lib->elf_valid) {
+            missing_elf++;
+        } else if (lib->abi[0] && strcmp(machine_abi, "unknown") != 0 &&
+                   strcmp(lib->abi, machine_abi) != 0) {
+            abi_header_mismatches++;
+        }
+    }
+
+    puts("NDK");
+    printf("  File: %s\n", info->path);
+    printf("  Package: %s\n", info->manifest.package_name[0] ? info->manifest.package_name : "unknown");
+    printf("  Native libraries: %d\n", info->native_lib_count);
+    printf("  Native ABIs: ");
+    print_csv_abis(info);
+    printf("\n");
+    printf("  ABI model: %s\n",
+           has_32 && has_64 ? "mixed 32/64-bit" :
+           has_64 ? "64-bit only" :
+           has_32 ? "32-bit only" : "none");
+    printf("  Compressed native libraries: %d\n", compressed_libs);
+    printf("  ELF parse failures: %d\n", missing_elf);
+    printf("  ABI/header mismatches: %d\n", abi_header_mismatches);
+    printf("  Extraction required before load: %s\n",
+           compressed_libs > 0 ? "yes" : info->native_lib_count > 0 ? "no" : "not applicable");
+
+    puts("");
+    puts("Native Libraries");
+    if (info->native_lib_count == 0) {
+        puts("  none");
+        return;
+    }
+
+    for (int i = 0; i < printed; i++) {
+        const NativeLib *lib = &info->native_libs[i];
+
+        printf("  %s\n", lib->path);
+        printf("    ABI: %s\n", lib->abi[0] ? lib->abi : "unknown");
+        printf("    Size: %llu bytes\n", lib->size);
+        if (lib->compressed_size > 0) {
+            printf("    Compressed size: %llu bytes\n", lib->compressed_size);
+        }
+        printf("    ZIP compression: %s\n", compression_method_name(lib->compression_method));
+        if (lib->elf_valid) {
+            printf("    ELF: %d-bit %s\n", lib->elf_class, elf_machine_name(lib->elf_machine));
+        } else {
+            printf("    ELF: unreadable or not an ELF shared object\n");
+        }
+    }
+
+    if (info->native_lib_count > MAX_NATIVE_LIBS) {
+        printf("  ... %d more native libraries omitted\n", info->native_lib_count - MAX_NATIVE_LIBS);
+    }
+}
+
 static void print_inspect_help(void) {
     puts("Usage: fpatch inspect --source <app.apk>");
     puts("       fpatch inspect --apk <app.apk>");
+    puts("       fpatch inspect --source <app.apk> --ndk");
     puts("");
     puts("Inspects an Android APK structure, manifest metadata, signatures, DEX files,");
     puts("native libraries, and FalconPatch bootstrap readiness.");
+    puts("");
+    puts("Flags:");
+    puts("  --ndk    Advanced native/NDK-only report.");
 }
 
 static void handle_inspect(Command *cmd) {
@@ -919,7 +1104,11 @@ static void handle_inspect(Command *cmd) {
         return;
     }
 
-    print_report(&info);
+    if (has_flag(cmd, "--ndk")) {
+        print_ndk_report(&info);
+    } else {
+        print_report(&info);
+    }
 }
 
 CMD_INIT(register_inspect_cmd) {
@@ -927,6 +1116,7 @@ CMD_INIT(register_inspect_cmd) {
     if (inspect) {
         inspect->add_flag(inspect, "--source", true, true, false)
                ->add_flag(inspect, "--apk", true, true, false)
+               ->add_flag(inspect, "--ndk", true, false, false)
                ->add_flag(inspect, "--help", true, false, false);
     }
 }
