@@ -1,0 +1,865 @@
+#include "cli.h"
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <zip.h>
+
+#define AXML_CHUNK_XML 0x00080003u
+#define AXML_CHUNK_STRING_POOL 0x001c0001u
+#define AXML_CHUNK_RESOURCE_MAP 0x00080180u
+#define AXML_CHUNK_START_ELEMENT 0x00100102u
+
+#define APK_SIG_V2 0x7109871au
+#define APK_SIG_V3 0xf05368c0u
+#define APK_SIG_V31 0x1b93ad61u
+
+typedef struct {
+    char **items;
+    size_t count;
+} StringPool;
+
+typedef struct {
+    char package_name[256];
+    char version_name[128];
+    uint32_t version_code;
+    uint32_t min_sdk;
+    uint32_t target_sdk;
+    char application_class[256];
+    int debuggable;
+    int test_only;
+    int has_manifest;
+} ManifestInfo;
+
+typedef struct {
+    const char *path;
+    int is_apk;
+    int dex_count;
+    int native_lib_count;
+    int has_manifest;
+    int has_resources;
+    int has_falcon_bootstrap;
+    int sig_v2;
+    int sig_v3;
+    int sig_v31;
+    char abis[16][32];
+    size_t abi_count;
+    unsigned char cert_sha256[32];
+    int has_cert;
+    ManifestInfo manifest;
+} ApkInfo;
+
+typedef struct {
+    uint32_t state[8];
+    uint64_t bit_len;
+    unsigned char data[64];
+    size_t data_len;
+} Sha256;
+
+static uint16_t read_u16(const unsigned char *p) {
+    return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+
+static uint32_t read_u32(const unsigned char *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static uint64_t read_u64(const unsigned char *p) {
+    return (uint64_t)read_u32(p) | ((uint64_t)read_u32(p + 4) << 32);
+}
+
+static void set_text(char *dest, size_t size, const char *src) {
+    if (size == 0) {
+        return;
+    }
+    if (!src) {
+        dest[0] = '\0';
+        return;
+    }
+    strncpy(dest, src, size - 1);
+    dest[size - 1] = '\0';
+}
+
+static int ends_with(const char *value, const char *suffix) {
+    size_t value_len = strlen(value);
+    size_t suffix_len = strlen(suffix);
+    return value_len >= suffix_len &&
+           strcmp(value + value_len - suffix_len, suffix) == 0;
+}
+
+static int starts_with(const char *value, const char *prefix) {
+    return strncmp(value, prefix, strlen(prefix)) == 0;
+}
+
+static int contains_text(const char *value, const char *needle) {
+    return strstr(value, needle) != NULL;
+}
+
+static void add_abi(ApkInfo *info, const char *entry_name) {
+    const char *start;
+    const char *end;
+    char abi[32];
+    size_t len;
+    size_t i;
+
+    if (!starts_with(entry_name, "lib/")) {
+        return;
+    }
+
+    start = entry_name + 4;
+    end = strchr(start, '/');
+    if (!end) {
+        return;
+    }
+
+    len = (size_t)(end - start);
+    if (len == 0 || len >= sizeof(abi)) {
+        return;
+    }
+
+    memcpy(abi, start, len);
+    abi[len] = '\0';
+
+    for (i = 0; i < info->abi_count; i++) {
+        if (strcmp(info->abis[i], abi) == 0) {
+            return;
+        }
+    }
+
+    if (info->abi_count < 16) {
+        set_text(info->abis[info->abi_count++], sizeof(info->abis[0]), abi);
+    }
+}
+
+static uint32_t rotr32(uint32_t value, uint32_t bits) {
+    return (value >> bits) | (value << (32u - bits));
+}
+
+static void sha256_transform(Sha256 *ctx, const unsigned char data[64]) {
+    static const uint32_t k[64] = {
+        0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u,
+        0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
+        0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u,
+        0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
+        0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu,
+        0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
+        0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u,
+        0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
+        0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u,
+        0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
+        0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u,
+        0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
+        0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u,
+        0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
+        0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u,
+        0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u
+    };
+    uint32_t w[64];
+    uint32_t a, b, c, d, e, f, g, h;
+    size_t i;
+
+    for (i = 0; i < 16; i++) {
+        w[i] = ((uint32_t)data[i * 4] << 24) |
+               ((uint32_t)data[i * 4 + 1] << 16) |
+               ((uint32_t)data[i * 4 + 2] << 8) |
+               (uint32_t)data[i * 4 + 3];
+    }
+    for (i = 16; i < 64; i++) {
+        uint32_t s0 = rotr32(w[i - 15], 7) ^ rotr32(w[i - 15], 18) ^ (w[i - 15] >> 3);
+        uint32_t s1 = rotr32(w[i - 2], 17) ^ rotr32(w[i - 2], 19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+    }
+
+    a = ctx->state[0]; b = ctx->state[1]; c = ctx->state[2]; d = ctx->state[3];
+    e = ctx->state[4]; f = ctx->state[5]; g = ctx->state[6]; h = ctx->state[7];
+
+    for (i = 0; i < 64; i++) {
+        uint32_t s1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
+        uint32_t ch = (e & f) ^ (~e & g);
+        uint32_t temp1 = h + s1 + ch + k[i] + w[i];
+        uint32_t s0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
+        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t temp2 = s0 + maj;
+        h = g; g = f; f = e; e = d + temp1;
+        d = c; c = b; b = a; a = temp1 + temp2;
+    }
+
+    ctx->state[0] += a; ctx->state[1] += b; ctx->state[2] += c; ctx->state[3] += d;
+    ctx->state[4] += e; ctx->state[5] += f; ctx->state[6] += g; ctx->state[7] += h;
+}
+
+static void sha256_init(Sha256 *ctx) {
+    ctx->data_len = 0;
+    ctx->bit_len = 0;
+    ctx->state[0] = 0x6a09e667u; ctx->state[1] = 0xbb67ae85u;
+    ctx->state[2] = 0x3c6ef372u; ctx->state[3] = 0xa54ff53au;
+    ctx->state[4] = 0x510e527fu; ctx->state[5] = 0x9b05688cu;
+    ctx->state[6] = 0x1f83d9abu; ctx->state[7] = 0x5be0cd19u;
+}
+
+static void sha256_update(Sha256 *ctx, const unsigned char *data, size_t len) {
+    size_t i;
+    for (i = 0; i < len; i++) {
+        ctx->data[ctx->data_len++] = data[i];
+        if (ctx->data_len == 64) {
+            sha256_transform(ctx, ctx->data);
+            ctx->bit_len += 512;
+            ctx->data_len = 0;
+        }
+    }
+}
+
+static void sha256_final(Sha256 *ctx, unsigned char hash[32]) {
+    size_t i = ctx->data_len;
+    size_t j;
+
+    ctx->data[i++] = 0x80;
+    if (i > 56) {
+        while (i < 64) {
+            ctx->data[i++] = 0;
+        }
+        sha256_transform(ctx, ctx->data);
+        i = 0;
+    }
+    while (i < 56) {
+        ctx->data[i++] = 0;
+    }
+
+    ctx->bit_len += (uint64_t)ctx->data_len * 8u;
+    for (j = 0; j < 8; j++) {
+        ctx->data[63 - j] = (unsigned char)(ctx->bit_len >> (j * 8));
+    }
+    sha256_transform(ctx, ctx->data);
+
+    for (i = 0; i < 4; i++) {
+        for (j = 0; j < 8; j++) {
+            hash[j * 4 + i] = (unsigned char)(ctx->state[j] >> (24 - i * 8));
+        }
+    }
+}
+
+static void print_sha256(const unsigned char hash[32]) {
+    size_t i;
+    for (i = 0; i < 32; i++) {
+        printf("%02X%s", hash[i], i + 1 == 32 ? "" : ":");
+    }
+}
+
+static int read_zip_entry(zip_t *apk, const char *name, unsigned char **data, size_t *size) {
+    zip_stat_t st;
+    zip_file_t *file;
+    zip_int64_t read_total;
+
+    *data = NULL;
+    *size = 0;
+
+    if (zip_stat(apk, name, 0, &st) != 0 || st.size == 0) {
+        return 0;
+    }
+
+    file = zip_fopen(apk, name, 0);
+    if (!file) {
+        return 0;
+    }
+
+    *data = (unsigned char *)malloc((size_t)st.size);
+    if (!*data) {
+        zip_fclose(file);
+        return 0;
+    }
+
+    read_total = zip_fread(file, *data, st.size);
+    zip_fclose(file);
+    if (read_total < 0 || (zip_uint64_t)read_total != st.size) {
+        free(*data);
+        *data = NULL;
+        return 0;
+    }
+
+    *size = (size_t)st.size;
+    return 1;
+}
+
+static char *decode_utf16_string(const unsigned char *src, size_t bytes) {
+    size_t chars = bytes / 2;
+    char *out = (char *)calloc(chars * 3 + 1, 1);
+    size_t i;
+    size_t j = 0;
+
+    if (!out) {
+        return NULL;
+    }
+
+    for (i = 0; i < chars; i++) {
+        uint16_t ch = read_u16(src + i * 2);
+        if (ch < 0x80) {
+            out[j++] = (char)ch;
+        } else if (ch < 0x800) {
+            out[j++] = (char)(0xc0 | (ch >> 6));
+            out[j++] = (char)(0x80 | (ch & 0x3f));
+        } else {
+            out[j++] = (char)(0xe0 | (ch >> 12));
+            out[j++] = (char)(0x80 | ((ch >> 6) & 0x3f));
+            out[j++] = (char)(0x80 | (ch & 0x3f));
+        }
+    }
+
+    return out;
+}
+
+static int parse_string_pool(const unsigned char *data, size_t size, size_t offset, StringPool *pool) {
+    uint32_t chunk_size;
+    uint32_t string_count;
+    uint32_t flags;
+    uint32_t strings_start;
+    int is_utf8;
+    size_t i;
+
+    if (offset + 28 > size || read_u16(data + offset) != AXML_CHUNK_STRING_POOL) {
+        return 0;
+    }
+
+    chunk_size = read_u32(data + offset + 4);
+    string_count = read_u32(data + offset + 8);
+    flags = read_u32(data + offset + 16);
+    strings_start = read_u32(data + offset + 20);
+    is_utf8 = (flags & 0x00000100u) != 0;
+
+    if (offset + chunk_size > size || string_count > 100000u) {
+        return 0;
+    }
+
+    pool->items = (char **)calloc(string_count, sizeof(char *));
+    pool->count = string_count;
+    if (!pool->items) {
+        return 0;
+    }
+
+    for (i = 0; i < string_count; i++) {
+        size_t string_offset_pos = offset + 28 + i * 4;
+        size_t string_pos;
+        if (string_offset_pos + 4 > size) {
+            break;
+        }
+        string_pos = offset + strings_start + read_u32(data + string_offset_pos);
+        if (string_pos >= offset + chunk_size || string_pos >= size) {
+            continue;
+        }
+
+        if (is_utf8) {
+            uint32_t byte_len;
+            const unsigned char *p = data + string_pos;
+            if ((size_t)(p - data) + 2 > size) {
+                continue;
+            }
+            p += (*p & 0x80) ? 2 : 1;
+            byte_len = *p;
+            p += (*p & 0x80) ? 2 : 1;
+            if ((size_t)(p - data) + byte_len > size) {
+                continue;
+            }
+            pool->items[i] = (char *)calloc(byte_len + 1, 1);
+            if (pool->items[i]) {
+                memcpy(pool->items[i], p, byte_len);
+            }
+        } else {
+            uint32_t char_len;
+            const unsigned char *p = data + string_pos;
+            if ((size_t)(p - data) + 2 > size) {
+                continue;
+            }
+            char_len = read_u16(p);
+            p += (char_len & 0x8000u) ? 4 : 2;
+            if ((size_t)(p - data) + char_len * 2 > size) {
+                continue;
+            }
+            pool->items[i] = decode_utf16_string(p, char_len * 2);
+        }
+    }
+
+    return 1;
+}
+
+static void free_string_pool(StringPool *pool) {
+    size_t i;
+    for (i = 0; i < pool->count; i++) {
+        free(pool->items[i]);
+    }
+    free(pool->items);
+    pool->items = NULL;
+    pool->count = 0;
+}
+
+static const char *pool_string(const StringPool *pool, uint32_t index) {
+    if (index == 0xffffffffu || index >= pool->count) {
+        return NULL;
+    }
+    return pool->items[index];
+}
+
+static int attr_bool(const unsigned char *attr) {
+    uint32_t data_type = attr[15];
+    uint32_t data_value = read_u32(attr + 16);
+    if (data_type == 0x12u) {
+        return data_value != 0 ? 1 : 0;
+    }
+    return -1;
+}
+
+static uint32_t attr_int(const unsigned char *attr, const StringPool *pool) {
+    uint32_t raw_index = read_u32(attr + 8);
+    uint32_t data_type = attr[15];
+    if (data_type >= 0x10u && data_type <= 0x1fu) {
+        return read_u32(attr + 16);
+    }
+    if (raw_index != 0xffffffffu) {
+        const char *raw = pool_string(pool, raw_index);
+        if (raw) {
+            return (uint32_t)strtoul(raw, NULL, 10);
+        }
+    }
+    return 0;
+}
+
+static const char *attr_string(const unsigned char *attr, const StringPool *pool) {
+    uint32_t raw_index = read_u32(attr + 8);
+    uint32_t data_type = attr[15];
+    if (raw_index != 0xffffffffu) {
+        return pool_string(pool, raw_index);
+    }
+    if (data_type == 0x03u) {
+        return pool_string(pool, read_u32(attr + 16));
+    }
+    return NULL;
+}
+
+static void parse_manifest_element(const unsigned char *chunk, size_t chunk_size,
+                                   const StringPool *pool, ManifestInfo *manifest) {
+    const char *element_name;
+    uint32_t name_index;
+    uint16_t attr_count;
+    size_t attrs_offset;
+    size_t i;
+
+    if (chunk_size < 36) {
+        return;
+    }
+
+    name_index = read_u32(chunk + 20);
+    element_name = pool_string(pool, name_index);
+    attr_count = read_u16(chunk + 28);
+    attrs_offset = 36;
+
+    for (i = 0; i < attr_count; i++) {
+        const unsigned char *attr = chunk + attrs_offset + i * 20;
+        const char *attr_name;
+        const char *text_value;
+        int bool_value;
+
+        if (attrs_offset + i * 20 + 20 > chunk_size) {
+            break;
+        }
+
+        attr_name = pool_string(pool, read_u32(attr + 4));
+        if (!element_name || !attr_name) {
+            continue;
+        }
+
+        text_value = attr_string(attr, pool);
+        bool_value = attr_bool(attr);
+
+        if (strcmp(element_name, "manifest") == 0) {
+            if (strcmp(attr_name, "package") == 0) {
+                set_text(manifest->package_name, sizeof(manifest->package_name), text_value);
+            } else if (strcmp(attr_name, "versionName") == 0) {
+                set_text(manifest->version_name, sizeof(manifest->version_name), text_value);
+            } else if (strcmp(attr_name, "versionCode") == 0) {
+                manifest->version_code = attr_int(attr, pool);
+            }
+        } else if (strcmp(element_name, "uses-sdk") == 0) {
+            if (strcmp(attr_name, "minSdkVersion") == 0) {
+                manifest->min_sdk = attr_int(attr, pool);
+            } else if (strcmp(attr_name, "targetSdkVersion") == 0) {
+                manifest->target_sdk = attr_int(attr, pool);
+            }
+        } else if (strcmp(element_name, "application") == 0) {
+            if (strcmp(attr_name, "name") == 0) {
+                set_text(manifest->application_class, sizeof(manifest->application_class), text_value);
+            } else if (strcmp(attr_name, "debuggable") == 0) {
+                manifest->debuggable = bool_value;
+            } else if (strcmp(attr_name, "testOnly") == 0) {
+                manifest->test_only = bool_value;
+            }
+        }
+    }
+}
+
+static int parse_android_manifest(const unsigned char *data, size_t size, ManifestInfo *manifest) {
+    StringPool pool;
+    size_t offset;
+
+    memset(&pool, 0, sizeof(pool));
+    memset(manifest, 0, sizeof(*manifest));
+    manifest->debuggable = -1;
+    manifest->test_only = -1;
+
+    if (size < 8 || read_u32(data) != AXML_CHUNK_XML) {
+        return 0;
+    }
+
+    offset = 8;
+    while (offset + 8 <= size) {
+        uint16_t type = read_u16(data + offset);
+        uint32_t chunk_size = read_u32(data + offset + 4);
+        if (chunk_size < 8 || offset + chunk_size > size) {
+            break;
+        }
+
+        if (type == AXML_CHUNK_STRING_POOL) {
+            parse_string_pool(data, size, offset, &pool);
+        } else if (type == AXML_CHUNK_START_ELEMENT && pool.items) {
+            parse_manifest_element(data + offset, chunk_size, &pool, manifest);
+        } else if (type == AXML_CHUNK_RESOURCE_MAP) {
+            /* The string names are enough for this starter inspector. */
+        }
+
+        offset += chunk_size;
+    }
+
+    manifest->has_manifest = pool.items != NULL;
+    free_string_pool(&pool);
+    return manifest->has_manifest;
+}
+
+static int compute_cert_hash(zip_t *apk, const char *entry_name, ApkInfo *info) {
+    unsigned char *data;
+    size_t size;
+    Sha256 sha;
+
+    if (!read_zip_entry(apk, entry_name, &data, &size)) {
+        return 0;
+    }
+
+    sha256_init(&sha);
+    sha256_update(&sha, data, size);
+    sha256_final(&sha, info->cert_sha256);
+    info->has_cert = 1;
+    free(data);
+    return 1;
+}
+
+static void detect_signing_block(ApkInfo *info) {
+    FILE *file = fopen(info->path, "rb");
+    unsigned char *tail;
+    unsigned char *block;
+    long file_size;
+    long tail_size;
+    long eocd = -1;
+    uint32_t central_dir_offset;
+    uint64_t block_size;
+    long block_start;
+    size_t pos;
+
+    if (!file) {
+        return;
+    }
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return;
+    }
+    file_size = ftell(file);
+    tail_size = file_size < 70000 ? file_size : 70000;
+    if (tail_size <= 0 || fseek(file, file_size - tail_size, SEEK_SET) != 0) {
+        fclose(file);
+        return;
+    }
+
+    tail = (unsigned char *)malloc((size_t)tail_size);
+    if (!tail) {
+        fclose(file);
+        return;
+    }
+    if (fread(tail, 1, (size_t)tail_size, file) != (size_t)tail_size) {
+        free(tail);
+        fclose(file);
+        return;
+    }
+
+    for (long i = tail_size - 22; i >= 0; i--) {
+        if (read_u32(tail + i) == 0x06054b50u) {
+            eocd = file_size - tail_size + i;
+            break;
+        }
+    }
+    if (eocd < 0 || eocd - (file_size - tail_size) + 20 > tail_size) {
+        free(tail);
+        fclose(file);
+        return;
+    }
+
+    central_dir_offset = read_u32(tail + (eocd - (file_size - tail_size)) + 16);
+    free(tail);
+    if (central_dir_offset < 24 || fseek(file, (long)central_dir_offset - 24, SEEK_SET) != 0) {
+        fclose(file);
+        return;
+    }
+
+    {
+        unsigned char footer[24];
+        if (fread(footer, 1, sizeof(footer), file) != sizeof(footer)) {
+            fclose(file);
+            return;
+        }
+        if (memcmp(footer + 8, "APK Sig Block 42", 16) != 0) {
+            fclose(file);
+            return;
+        }
+        block_size = read_u64(footer);
+    }
+
+    if (block_size > (uint64_t)central_dir_offset || block_size < 24) {
+        fclose(file);
+        return;
+    }
+
+    block_start = (long)((uint64_t)central_dir_offset - block_size - 8u);
+    if (block_start < 0 || fseek(file, block_start, SEEK_SET) != 0) {
+        fclose(file);
+        return;
+    }
+
+    block = (unsigned char *)malloc((size_t)block_size + 8u);
+    if (!block) {
+        fclose(file);
+        return;
+    }
+    if (fread(block, 1, (size_t)block_size + 8u, file) != (size_t)block_size + 8u) {
+        free(block);
+        fclose(file);
+        return;
+    }
+
+    pos = 8;
+    while (pos + 12 <= (size_t)block_size) {
+        uint64_t pair_size = read_u64(block + pos);
+        uint32_t id;
+        if (pair_size < 4 || pos + 8u + pair_size > (size_t)block_size) {
+            break;
+        }
+        id = read_u32(block + pos + 8);
+        if (id == APK_SIG_V2) {
+            info->sig_v2 = 1;
+        } else if (id == APK_SIG_V3) {
+            info->sig_v3 = 1;
+        } else if (id == APK_SIG_V31) {
+            info->sig_v31 = 1;
+        }
+        pos += 8u + (size_t)pair_size;
+    }
+
+    free(block);
+    fclose(file);
+}
+
+static int inspect_apk(const char *apk_path, ApkInfo *info) {
+    int error = 0;
+    zip_t *apk = zip_open(apk_path, ZIP_RDONLY, &error);
+    zip_int64_t entries;
+    zip_int64_t i;
+
+    memset(info, 0, sizeof(*info));
+    info->path = apk_path;
+    info->manifest.debuggable = -1;
+    info->manifest.test_only = -1;
+
+    if (!apk) {
+        fprintf(stderr, "Error: Could not open APK/ZIP '%s' (zip error %d)\n", apk_path, error);
+        return 0;
+    }
+
+    info->is_apk = ends_with(apk_path, ".apk");
+    entries = zip_get_num_entries(apk, 0);
+    for (i = 0; i < entries; i++) {
+        const char *name = zip_get_name(apk, (zip_uint64_t)i, 0);
+        if (!name) {
+            continue;
+        }
+
+        if (strcmp(name, "AndroidManifest.xml") == 0) {
+            unsigned char *manifest_data;
+            size_t manifest_size;
+            info->has_manifest = 1;
+            if (read_zip_entry(apk, name, &manifest_data, &manifest_size)) {
+                parse_android_manifest(manifest_data, manifest_size, &info->manifest);
+                free(manifest_data);
+            }
+        } else if (strcmp(name, "resources.arsc") == 0) {
+            info->has_resources = 1;
+        } else if (starts_with(name, "classes") && ends_with(name, ".dex")) {
+            info->dex_count++;
+        } else if (starts_with(name, "lib/") && ends_with(name, ".so")) {
+            info->native_lib_count++;
+            add_abi(info, name);
+        } else if (starts_with(name, "META-INF/") &&
+                   (ends_with(name, ".RSA") || ends_with(name, ".DSA") || ends_with(name, ".EC"))) {
+            if (!info->has_cert) {
+                compute_cert_hash(apk, name, info);
+            }
+        }
+
+        if (contains_text(name, "falconpatch") || contains_text(name, "fpatch")) {
+            info->has_falcon_bootstrap = 1;
+        }
+    }
+
+    zip_close(apk);
+    detect_signing_block(info);
+    return 1;
+}
+
+static void print_csv_abis(const ApkInfo *info) {
+    size_t i;
+    if (info->abi_count == 0) {
+        printf("none");
+        return;
+    }
+    for (i = 0; i < info->abi_count; i++) {
+        printf("%s%s", i == 0 ? "" : ", ", info->abis[i]);
+    }
+}
+
+static void print_bool(int value) {
+    if (value < 0) {
+        printf("unknown");
+    } else {
+        printf("%s", value ? "yes" : "no");
+    }
+}
+
+static void print_sig_schemes(const ApkInfo *info) {
+    int printed = 0;
+    if (info->sig_v2) {
+        printf("v2");
+        printed = 1;
+    }
+    if (info->sig_v3) {
+        printf("%sv3", printed ? ", " : "");
+        printed = 1;
+    }
+    if (info->sig_v31) {
+        printf("%sv3.1", printed ? ", " : "");
+        printed = 1;
+    }
+    if (!printed && info->has_cert) {
+        printf("v1/JAR");
+    } else if (!printed) {
+        printf("unknown");
+    }
+}
+
+static void print_report(const ApkInfo *info) {
+    const ManifestInfo *m = &info->manifest;
+    int debuggable = m->debuggable == 1;
+
+    puts("Source");
+    printf("  File: %s\n", info->path);
+    printf("  Type: %s\n", info->is_apk ? "standalone-apk" : "zip-like-apk");
+    printf("  Package: %s\n", m->package_name[0] ? m->package_name : "unknown");
+    printf("  Version: %s", m->version_name[0] ? m->version_name : "unknown");
+    if (m->version_code) {
+        printf(" (%u)", m->version_code);
+    }
+    printf("\n");
+    printf("  Min SDK: %s", m->min_sdk ? "" : "unknown");
+    if (m->min_sdk) {
+        printf("%u", m->min_sdk);
+    }
+    printf("\n");
+    printf("  Target SDK: %s", m->target_sdk ? "" : "unknown");
+    if (m->target_sdk) {
+        printf("%u", m->target_sdk);
+    }
+    printf("\n\n");
+
+    puts("Security");
+    printf("  Debuggable: ");
+    print_bool(m->debuggable);
+    printf("\n");
+    printf("  Test-only: ");
+    print_bool(m->test_only);
+    printf("\n");
+    printf("  Certificate: ");
+    if (info->has_cert) {
+        printf("SHA-256 ");
+        print_sha256(info->cert_sha256);
+    } else {
+        printf("unknown");
+    }
+    printf("\n");
+    printf("  APK Signature Schemes: ");
+    print_sig_schemes(info);
+    printf("\n\n");
+
+    puts("Code");
+    printf("  DEX files: %d\n", info->dex_count);
+    printf("  Application class: %s\n", m->application_class[0] ? m->application_class : "unknown");
+    printf("  Native ABIs: ");
+    print_csv_abis(info);
+    printf("\n");
+    printf("  Native libraries: %d\n\n", info->native_lib_count);
+
+    puts("FalconPatch");
+    printf("  Existing bootstrap: %s\n", info->has_falcon_bootstrap ? "found" : "not found");
+    printf("  Provider bootstrap possible: %s\n", info->has_manifest ? "yes" : "unknown");
+    printf("  Additional DEX possible: %s\n", info->dex_count > 0 ? "yes" : "unknown");
+    printf("  Manifest patch required: %s\n", info->has_falcon_bootstrap ? "no" : "yes");
+    printf("  Resigning required: yes\n\n");
+
+    puts("Strategies");
+    printf("  Integrated loader: %s\n", info->has_falcon_bootstrap ? "available" : "unavailable");
+    printf("  JVMTI: %s\n", debuggable ? "available" : "unavailable - application is not debuggable");
+    printf("  Startup wrapper: %s\n", debuggable ? "available" : "unavailable - application is not debuggable");
+    printf("  Manifest debug patch: %s\n", info->has_manifest ? "available" : "unavailable");
+    printf("  Bootstrap APK patch: %s\n", info->has_manifest ? "available" : "unavailable");
+}
+
+static void print_inspect_help(void) {
+    puts("Usage: fpatch inspect --apk <app.apk>");
+    puts("");
+    puts("Inspects an Android APK structure, manifest metadata, signatures, DEX files,");
+    puts("native libraries, and FalconPatch bootstrap readiness.");
+}
+
+static void handle_inspect(Command *cmd) {
+    const char *apk_path;
+    ApkInfo info;
+
+    if (has_flag(cmd, "--help")) {
+        print_inspect_help();
+        return;
+    }
+
+    apk_path = get_flag_value(cmd, "--apk");
+    if (!apk_path) {
+        print_inspect_help();
+        cmd->exit_code = 1;
+        return;
+    }
+
+    if (!inspect_apk(apk_path, &info)) {
+        cmd->exit_code = 1;
+        return;
+    }
+
+    print_report(&info);
+}
+
+CMD_INIT(register_inspect_cmd) {
+    Command *inspect = add_cmd("inspect", handle_inspect);
+    if (inspect) {
+        inspect->add_flag(inspect, "--apk", true, true, false)
+               ->add_flag(inspect, "--help", true, false, false);
+    }
+}
