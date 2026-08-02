@@ -7,9 +7,9 @@
 #include <zip.h>
 
 #define AXML_CHUNK_XML 0x00080003u
-#define AXML_CHUNK_STRING_POOL 0x001c0001u
-#define AXML_CHUNK_RESOURCE_MAP 0x00080180u
-#define AXML_CHUNK_START_ELEMENT 0x00100102u
+#define AXML_CHUNK_STRING_POOL 0x0001u
+#define AXML_CHUNK_RESOURCE_MAP 0x0180u
+#define AXML_CHUNK_START_ELEMENT 0x0102u
 
 #define APK_SIG_V2 0x7109871au
 #define APK_SIG_V3 0xf05368c0u
@@ -70,6 +70,46 @@ static uint64_t read_u64(const unsigned char *p) {
     return (uint64_t)read_u32(p) | ((uint64_t)read_u32(p + 4) << 32);
 }
 
+static uint32_t read_length8(const unsigned char **cursor, const unsigned char *end) {
+    uint32_t len;
+
+    if (*cursor >= end) {
+        return 0;
+    }
+
+    len = **cursor;
+    (*cursor)++;
+    if ((len & 0x80u) != 0) {
+        if (*cursor >= end) {
+            return 0;
+        }
+        len = ((len & 0x7fu) << 8) | **cursor;
+        (*cursor)++;
+    }
+
+    return len;
+}
+
+static uint32_t read_length16(const unsigned char **cursor, const unsigned char *end) {
+    uint32_t len;
+
+    if (*cursor + 2 > end) {
+        return 0;
+    }
+
+    len = read_u16(*cursor);
+    *cursor += 2;
+    if ((len & 0x8000u) != 0) {
+        if (*cursor + 2 > end) {
+            return 0;
+        }
+        len = ((len & 0x7fffu) << 16) | read_u16(*cursor);
+        *cursor += 2;
+    }
+
+    return len;
+}
+
 static void set_text(char *dest, size_t size, const char *src) {
     if (size == 0) {
         return;
@@ -95,6 +135,24 @@ static int starts_with(const char *value, const char *prefix) {
 
 static int contains_text(const char *value, const char *needle) {
     return strstr(value, needle) != NULL;
+}
+
+static void normalize_application_class(ManifestInfo *manifest) {
+    char normalized[256];
+
+    if (!manifest->package_name[0] || !manifest->application_class[0]) {
+        return;
+    }
+
+    if (manifest->application_class[0] == '.') {
+        snprintf(normalized, sizeof(normalized), "%s%s",
+                 manifest->package_name, manifest->application_class);
+        set_text(manifest->application_class, sizeof(manifest->application_class), normalized);
+    } else if (!strchr(manifest->application_class, '.')) {
+        snprintf(normalized, sizeof(normalized), "%s.%s",
+                 manifest->package_name, manifest->application_class);
+        set_text(manifest->application_class, sizeof(manifest->application_class), normalized);
+    }
 }
 
 static void add_abi(ApkInfo *info, const char *entry_name) {
@@ -351,13 +409,13 @@ static int parse_string_pool(const unsigned char *data, size_t size, size_t offs
         if (is_utf8) {
             uint32_t byte_len;
             const unsigned char *p = data + string_pos;
-            if ((size_t)(p - data) + 2 > size) {
+            const unsigned char *chunk_end = data + offset + chunk_size;
+            if (p >= chunk_end) {
                 continue;
             }
-            p += (*p & 0x80) ? 2 : 1;
-            byte_len = *p;
-            p += (*p & 0x80) ? 2 : 1;
-            if ((size_t)(p - data) + byte_len > size) {
+            (void)read_length8(&p, chunk_end);
+            byte_len = read_length8(&p, chunk_end);
+            if (p + byte_len > chunk_end) {
                 continue;
             }
             pool->items[i] = (char *)calloc(byte_len + 1, 1);
@@ -367,12 +425,12 @@ static int parse_string_pool(const unsigned char *data, size_t size, size_t offs
         } else {
             uint32_t char_len;
             const unsigned char *p = data + string_pos;
-            if ((size_t)(p - data) + 2 > size) {
+            const unsigned char *chunk_end = data + offset + chunk_size;
+            if (p >= chunk_end) {
                 continue;
             }
-            char_len = read_u16(p);
-            p += (char_len & 0x8000u) ? 4 : 2;
-            if ((size_t)(p - data) + char_len * 2 > size) {
+            char_len = read_length16(&p, chunk_end);
+            if (p + char_len * 2 > chunk_end) {
                 continue;
             }
             pool->items[i] = decode_utf16_string(p, char_len * 2);
@@ -450,7 +508,10 @@ static void parse_manifest_element(const unsigned char *chunk, size_t chunk_size
     name_index = read_u32(chunk + 20);
     element_name = pool_string(pool, name_index);
     attr_count = read_u16(chunk + 28);
-    attrs_offset = 36;
+    attrs_offset = 16u + read_u16(chunk + 24);
+    if (attrs_offset == 0 || attrs_offset >= chunk_size) {
+        attrs_offset = 36;
+    }
 
     for (i = 0; i < attr_count; i++) {
         const unsigned char *attr = chunk + attrs_offset + i * 20;
@@ -502,8 +563,8 @@ static int parse_android_manifest(const unsigned char *data, size_t size, Manife
 
     memset(&pool, 0, sizeof(pool));
     memset(manifest, 0, sizeof(*manifest));
-    manifest->debuggable = -1;
-    manifest->test_only = -1;
+    manifest->debuggable = 0;
+    manifest->test_only = 0;
 
     if (size < 8 || read_u32(data) != AXML_CHUNK_XML) {
         return 0;
@@ -529,6 +590,7 @@ static int parse_android_manifest(const unsigned char *data, size_t size, Manife
     }
 
     manifest->has_manifest = pool.items != NULL;
+    normalize_application_class(manifest);
     free_string_pool(&pool);
     return manifest->has_manifest;
 }
@@ -826,7 +888,8 @@ static void print_report(const ApkInfo *info) {
 }
 
 static void print_inspect_help(void) {
-    puts("Usage: fpatch inspect --apk <app.apk>");
+    puts("Usage: fpatch inspect --source <app.apk>");
+    puts("       fpatch inspect --apk <app.apk>");
     puts("");
     puts("Inspects an Android APK structure, manifest metadata, signatures, DEX files,");
     puts("native libraries, and FalconPatch bootstrap readiness.");
@@ -841,7 +904,10 @@ static void handle_inspect(Command *cmd) {
         return;
     }
 
-    apk_path = get_flag_value(cmd, "--apk");
+    apk_path = get_flag_value(cmd, "--source");
+    if (!apk_path) {
+        apk_path = get_flag_value(cmd, "--apk");
+    }
     if (!apk_path) {
         print_inspect_help();
         cmd->exit_code = 1;
@@ -859,7 +925,8 @@ static void handle_inspect(Command *cmd) {
 CMD_INIT(register_inspect_cmd) {
     Command *inspect = add_cmd("inspect", handle_inspect);
     if (inspect) {
-        inspect->add_flag(inspect, "--apk", true, true, false)
+        inspect->add_flag(inspect, "--source", true, true, false)
+               ->add_flag(inspect, "--apk", true, true, false)
                ->add_flag(inspect, "--help", true, false, false);
     }
 }

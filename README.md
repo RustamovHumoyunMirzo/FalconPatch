@@ -14,7 +14,7 @@ cmake --build build
 ### Inspect An APK
 
 ```sh
-fpatch inspect --apk app.apk
+fpatch inspect --source app.apk
 ```
 
 The inspect command reports APK structure, manifest metadata, debug/test flags,
