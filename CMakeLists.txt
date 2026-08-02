@@ -45,11 +45,13 @@ endif()
 FetchContent_MakeAvailable(libzip)
 
 file(GLOB COMMAND_SOURCES "src/commands/*.c")
+file(GLOB UTIL_SOURCES "src/utils/*.c")
 
 add_executable(fpatch
     src/main.c
     src/cli.c
     ${COMMAND_SOURCES}
+    ${UTIL_SOURCES}
 )
 
 target_include_directories(fpatch PRIVATE include)
