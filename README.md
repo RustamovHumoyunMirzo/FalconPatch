@@ -22,3 +22,6 @@ The inspect command reports APK structure, manifest metadata, debug/test flags,
 certificate hash, signature schemes, DEX/native code inventory, and FalconPatch
 bootstrap strategy hints. Add `--ndk` to print an advanced native-only report
 with ABIs, `.so` entries, ZIP compression, ELF bitness, and ELF machine checks.
+The normal code report also includes Java/Kotlin-to-NDK usage: `System.load` /
+`System.loadLibrary` calls and declared `native` methods with parameters and
+return types where they can be recovered from DEX metadata.

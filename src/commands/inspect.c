@@ -15,6 +15,25 @@
 #define APK_SIG_V3 0xf05368c0u
 #define APK_SIG_V31 0x1b93ad61u
 #define MAX_NATIVE_LIBS 512
+#define MAX_NATIVE_METHODS 512
+#define MAX_LOAD_CALLS 512
+#define ACC_NATIVE 0x0100u
+
+typedef struct {
+    char dex_file[64];
+    char class_name[256];
+    char method_name[128];
+    char params[512];
+    char return_type[128];
+} NativeMethod;
+
+typedef struct {
+    char dex_file[64];
+    char class_name[256];
+    char method_name[128];
+    char api[16];
+    char argument[256];
+} NativeLoadCall;
 
 typedef struct {
     char path[512];
@@ -56,6 +75,10 @@ typedef struct {
     int sig_v3;
     int sig_v31;
     NativeLib native_libs[MAX_NATIVE_LIBS];
+    NativeMethod native_methods[MAX_NATIVE_METHODS];
+    NativeLoadCall load_calls[MAX_LOAD_CALLS];
+    int native_method_count;
+    int load_call_count;
     char abis[16][32];
     size_t abi_count;
     unsigned char cert_sha256[32];
@@ -444,6 +467,521 @@ static int read_zip_entry(zip_t *apk, const char *name, unsigned char **data, si
 
     *size = (size_t)st.size;
     return 1;
+}
+
+static int read_uleb128(const unsigned char *data, size_t size, size_t *offset, uint32_t *value) {
+    uint32_t result = 0;
+    int shift = 0;
+
+    for (int i = 0; i < 5; i++) {
+        unsigned char byte;
+        if (*offset >= size) {
+            return 0;
+        }
+        byte = data[(*offset)++];
+        result |= (uint32_t)(byte & 0x7fu) << shift;
+        if ((byte & 0x80u) == 0) {
+            *value = result;
+            return 1;
+        }
+        shift += 7;
+    }
+
+    return 0;
+}
+
+static int get_dex_string(const unsigned char *data, size_t size,
+                          uint32_t string_ids_off, uint32_t string_ids_size,
+                          uint32_t index, char *out, size_t out_size) {
+    size_t offset;
+    size_t j = 0;
+    uint32_t ignored_len;
+
+    if (out_size == 0) {
+        return 0;
+    }
+    out[0] = '\0';
+
+    if (index >= string_ids_size || string_ids_off + index * 4u + 4u > size) {
+        return 0;
+    }
+
+    offset = read_u32(data + string_ids_off + index * 4u);
+    if (offset >= size || !read_uleb128(data, size, &offset, &ignored_len)) {
+        return 0;
+    }
+
+    while (offset < size && data[offset] != 0 && j + 1 < out_size) {
+        out[j++] = (char)data[offset++];
+    }
+    out[j] = '\0';
+    return 1;
+}
+
+static int get_dex_type_descriptor(const unsigned char *data, size_t size,
+                                   uint32_t string_ids_off, uint32_t string_ids_size,
+                                   uint32_t type_ids_off, uint32_t type_ids_size,
+                                   uint32_t type_index, char *out, size_t out_size) {
+    uint32_t descriptor_index;
+
+    if (type_index >= type_ids_size || type_ids_off + type_index * 4u + 4u > size) {
+        if (out_size > 0) {
+            out[0] = '\0';
+        }
+        return 0;
+    }
+
+    descriptor_index = read_u32(data + type_ids_off + type_index * 4u);
+    return get_dex_string(data, size, string_ids_off, string_ids_size,
+                          descriptor_index, out, out_size);
+}
+
+static void append_text(char *dest, size_t dest_size, const char *src) {
+    size_t used;
+    if (dest_size == 0 || !src) {
+        return;
+    }
+    used = strlen(dest);
+    if (used + 1 >= dest_size) {
+        return;
+    }
+    strncat(dest, src, dest_size - used - 1);
+}
+
+static void format_descriptor(const char *descriptor, char *out, size_t out_size) {
+    int arrays = 0;
+    char base[192];
+    size_t len;
+
+    if (out_size == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (!descriptor || !descriptor[0]) {
+        set_text(out, out_size, "unknown");
+        return;
+    }
+
+    while (*descriptor == '[') {
+        arrays++;
+        descriptor++;
+    }
+
+    switch (*descriptor) {
+    case 'V': set_text(base, sizeof(base), "void"); break;
+    case 'Z': set_text(base, sizeof(base), "boolean"); break;
+    case 'B': set_text(base, sizeof(base), "byte"); break;
+    case 'C': set_text(base, sizeof(base), "char"); break;
+    case 'S': set_text(base, sizeof(base), "short"); break;
+    case 'I': set_text(base, sizeof(base), "int"); break;
+    case 'J': set_text(base, sizeof(base), "long"); break;
+    case 'F': set_text(base, sizeof(base), "float"); break;
+    case 'D': set_text(base, sizeof(base), "double"); break;
+    case 'L':
+        len = strlen(descriptor);
+        if (len > 2 && descriptor[len - 1] == ';') {
+            size_t copy_len = len - 2;
+            if (copy_len >= sizeof(base)) {
+                copy_len = sizeof(base) - 1;
+            }
+            memcpy(base, descriptor + 1, copy_len);
+            base[copy_len] = '\0';
+            for (size_t i = 0; base[i]; i++) {
+                if (base[i] == '/') {
+                    base[i] = '.';
+                }
+            }
+        } else {
+            set_text(base, sizeof(base), descriptor);
+        }
+        break;
+    default:
+        set_text(base, sizeof(base), descriptor);
+        break;
+    }
+
+    set_text(out, out_size, base);
+    for (int i = 0; i < arrays; i++) {
+        append_text(out, out_size, "[]");
+    }
+}
+
+static void format_dex_type(const unsigned char *data, size_t size,
+                            uint32_t string_ids_off, uint32_t string_ids_size,
+                            uint32_t type_ids_off, uint32_t type_ids_size,
+                            uint32_t type_index, char *out, size_t out_size) {
+    char descriptor[256];
+
+    if (get_dex_type_descriptor(data, size, string_ids_off, string_ids_size,
+                                type_ids_off, type_ids_size, type_index,
+                                descriptor, sizeof(descriptor))) {
+        format_descriptor(descriptor, out, out_size);
+    } else if (out_size > 0) {
+        set_text(out, out_size, "unknown");
+    }
+}
+
+static void get_method_ref(const unsigned char *data, size_t size,
+                           uint32_t string_ids_off, uint32_t string_ids_size,
+                           uint32_t type_ids_off, uint32_t type_ids_size,
+                           uint32_t proto_ids_off, uint32_t proto_ids_size,
+                           uint32_t method_ids_off, uint32_t method_ids_size,
+                           uint32_t method_index, char *class_out, size_t class_size,
+                           char *name_out, size_t name_size,
+                           char *params_out, size_t params_size,
+                           char *return_out, size_t return_size) {
+    uint16_t class_idx;
+    uint16_t proto_idx;
+    uint32_t name_idx;
+    uint32_t return_type_idx;
+    uint32_t parameters_off;
+
+    if (class_size) class_out[0] = '\0';
+    if (name_size) name_out[0] = '\0';
+    if (params_size) params_out[0] = '\0';
+    if (return_size) return_out[0] = '\0';
+
+    if (method_index >= method_ids_size || method_ids_off + method_index * 8u + 8u > size) {
+        return;
+    }
+
+    class_idx = read_u16(data + method_ids_off + method_index * 8u);
+    proto_idx = read_u16(data + method_ids_off + method_index * 8u + 2u);
+    name_idx = read_u32(data + method_ids_off + method_index * 8u + 4u);
+
+    format_dex_type(data, size, string_ids_off, string_ids_size,
+                    type_ids_off, type_ids_size, class_idx, class_out, class_size);
+    get_dex_string(data, size, string_ids_off, string_ids_size,
+                   name_idx, name_out, name_size);
+
+    if (proto_idx >= proto_ids_size || proto_ids_off + proto_idx * 12u + 12u > size) {
+        set_text(params_out, params_size, "unknown");
+        set_text(return_out, return_size, "unknown");
+        return;
+    }
+
+    return_type_idx = read_u32(data + proto_ids_off + proto_idx * 12u + 4u);
+    parameters_off = read_u32(data + proto_ids_off + proto_idx * 12u + 8u);
+    format_dex_type(data, size, string_ids_off, string_ids_size,
+                    type_ids_off, type_ids_size, return_type_idx, return_out, return_size);
+
+    if (parameters_off == 0) {
+        set_text(params_out, params_size, "none");
+    } else if (parameters_off + 4u <= size) {
+        uint32_t param_count = read_u32(data + parameters_off);
+        size_t pos = parameters_off + 4u;
+        params_out[0] = '\0';
+        for (uint32_t i = 0; i < param_count && pos + 2u <= size; i++, pos += 2u) {
+            char type_name[128];
+            format_dex_type(data, size, string_ids_off, string_ids_size,
+                            type_ids_off, type_ids_size, read_u16(data + pos),
+                            type_name, sizeof(type_name));
+            if (i > 0) {
+                append_text(params_out, params_size, ", ");
+            }
+            append_text(params_out, params_size, type_name);
+        }
+        if (!params_out[0]) {
+            set_text(params_out, params_size, "none");
+        }
+    } else {
+        set_text(params_out, params_size, "unknown");
+    }
+}
+
+static void add_native_method(ApkInfo *info, const char *dex_name,
+                              const char *class_name, const char *method_name,
+                              const char *params, const char *return_type) {
+    NativeMethod *method;
+
+    info->native_method_count++;
+    if (info->native_method_count > MAX_NATIVE_METHODS) {
+        return;
+    }
+
+    method = &info->native_methods[info->native_method_count - 1];
+    set_text(method->dex_file, sizeof(method->dex_file), dex_name);
+    set_text(method->class_name, sizeof(method->class_name), class_name);
+    set_text(method->method_name, sizeof(method->method_name), method_name);
+    set_text(method->params, sizeof(method->params), params);
+    set_text(method->return_type, sizeof(method->return_type), return_type);
+}
+
+static void add_load_call(ApkInfo *info, const char *dex_name,
+                          const char *class_name, const char *method_name,
+                          const char *api, const char *argument) {
+    NativeLoadCall *call;
+
+    info->load_call_count++;
+    if (info->load_call_count > MAX_LOAD_CALLS) {
+        return;
+    }
+
+    call = &info->load_calls[info->load_call_count - 1];
+    set_text(call->dex_file, sizeof(call->dex_file), dex_name);
+    set_text(call->class_name, sizeof(call->class_name), class_name);
+    set_text(call->method_name, sizeof(call->method_name), method_name);
+    set_text(call->api, sizeof(call->api), api);
+    set_text(call->argument, sizeof(call->argument), argument);
+}
+
+static int is_system_load_call(const char *class_name, const char *method_name,
+                               const char *params, const char *return_type,
+                               char *api_out, size_t api_size) {
+    if (strcmp(class_name, "java.lang.System") != 0 ||
+        strcmp(params, "java.lang.String") != 0 ||
+        strcmp(return_type, "void") != 0) {
+        return 0;
+    }
+
+    if (strcmp(method_name, "loadLibrary") == 0) {
+        set_text(api_out, api_size, "loadLibrary");
+        return 1;
+    }
+    if (strcmp(method_name, "load") == 0) {
+        set_text(api_out, api_size, "load");
+        return 1;
+    }
+
+    return 0;
+}
+
+static void scan_code_for_load_calls(ApkInfo *info, const char *dex_name,
+                                     const unsigned char *data, size_t size,
+                                     uint32_t string_ids_off, uint32_t string_ids_size,
+                                     uint32_t type_ids_off, uint32_t type_ids_size,
+                                     uint32_t proto_ids_off, uint32_t proto_ids_size,
+                                     uint32_t method_ids_off, uint32_t method_ids_size,
+                                     const char *owner_class, const char *owner_method,
+                                     uint32_t code_off) {
+    uint16_t registers_size;
+    uint32_t insns_size;
+    size_t insns_off;
+    char reg_strings[256][256];
+
+    if (code_off == 0 || code_off + 16u > size) {
+        return;
+    }
+
+    registers_size = read_u16(data + code_off);
+    insns_size = read_u32(data + code_off + 12u);
+    insns_off = code_off + 16u;
+    if (registers_size > 256 || insns_off + (size_t)insns_size * 2u > size) {
+        return;
+    }
+
+    memset(reg_strings, 0, sizeof(reg_strings));
+
+    for (uint32_t pc = 0; pc < insns_size;) {
+        uint16_t insn = read_u16(data + insns_off + pc * 2u);
+        uint8_t op = (uint8_t)(insn & 0xffu);
+        uint8_t aa = (uint8_t)(insn >> 8);
+        uint32_t advance = 1;
+
+        if (op == 0x1au && pc + 1u < insns_size) {
+            uint16_t string_idx = read_u16(data + insns_off + (pc + 1u) * 2u);
+            if (aa < registers_size) {
+                get_dex_string(data, size, string_ids_off, string_ids_size,
+                               string_idx, reg_strings[aa], sizeof(reg_strings[aa]));
+            }
+            advance = 2;
+        } else if (op == 0x1bu && pc + 2u < insns_size) {
+            uint32_t string_idx = read_u32(data + insns_off + (pc + 1u) * 2u);
+            if (aa < registers_size) {
+                get_dex_string(data, size, string_ids_off, string_ids_size,
+                               string_idx, reg_strings[aa], sizeof(reg_strings[aa]));
+            }
+            advance = 3;
+        } else if (op == 0x71u && pc + 2u < insns_size) {
+            uint16_t method_idx = read_u16(data + insns_off + (pc + 1u) * 2u);
+            uint16_t regs = read_u16(data + insns_off + (pc + 2u) * 2u);
+            uint8_t arg_count = (uint8_t)((insn >> 8) & 0x0fu);
+            uint8_t first_arg = (uint8_t)(regs & 0x0fu);
+            char class_name[256];
+            char method_name[128];
+            char params[512];
+            char return_type[128];
+            char api[16];
+
+            get_method_ref(data, size, string_ids_off, string_ids_size,
+                           type_ids_off, type_ids_size, proto_ids_off, proto_ids_size,
+                           method_ids_off, method_ids_size, method_idx,
+                           class_name, sizeof(class_name), method_name, sizeof(method_name),
+                           params, sizeof(params), return_type, sizeof(return_type));
+
+            if (arg_count == 1 && first_arg < registers_size &&
+                is_system_load_call(class_name, method_name, params, return_type,
+                                    api, sizeof(api))) {
+                add_load_call(info, dex_name, owner_class, owner_method, api,
+                              reg_strings[first_arg][0] ? reg_strings[first_arg] : "dynamic/unknown");
+            }
+            advance = 3;
+        } else if (op == 0x77u && pc + 2u < insns_size) {
+            uint16_t method_idx = read_u16(data + insns_off + (pc + 1u) * 2u);
+            uint16_t first_reg = read_u16(data + insns_off + (pc + 2u) * 2u);
+            uint8_t arg_count = (uint8_t)(insn >> 8);
+            char class_name[256];
+            char method_name[128];
+            char params[512];
+            char return_type[128];
+            char api[16];
+
+            get_method_ref(data, size, string_ids_off, string_ids_size,
+                           type_ids_off, type_ids_size, proto_ids_off, proto_ids_size,
+                           method_ids_off, method_ids_size, method_idx,
+                           class_name, sizeof(class_name), method_name, sizeof(method_name),
+                           params, sizeof(params), return_type, sizeof(return_type));
+
+            if (arg_count == 1 && first_reg < registers_size &&
+                is_system_load_call(class_name, method_name, params, return_type,
+                                    api, sizeof(api))) {
+                add_load_call(info, dex_name, owner_class, owner_method, api,
+                              reg_strings[first_reg][0] ? reg_strings[first_reg] : "dynamic/unknown");
+            }
+            advance = 3;
+        }
+
+        pc += advance;
+    }
+}
+
+static void parse_encoded_methods(ApkInfo *info, const char *dex_name,
+                                  const unsigned char *data, size_t size,
+                                  uint32_t string_ids_off, uint32_t string_ids_size,
+                                  uint32_t type_ids_off, uint32_t type_ids_size,
+                                  uint32_t proto_ids_off, uint32_t proto_ids_size,
+                                  uint32_t method_ids_off, uint32_t method_ids_size,
+                                  const char *owner_class, uint32_t count,
+                                  size_t *offset, uint32_t *last_method_idx) {
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t method_idx_diff;
+        uint32_t access_flags;
+        uint32_t code_off;
+        uint32_t method_idx;
+        char class_name[256];
+        char method_name[128];
+        char params[512];
+        char return_type[128];
+
+        if (!read_uleb128(data, size, offset, &method_idx_diff) ||
+            !read_uleb128(data, size, offset, &access_flags) ||
+            !read_uleb128(data, size, offset, &code_off)) {
+            return;
+        }
+
+        *last_method_idx += method_idx_diff;
+        method_idx = *last_method_idx;
+        get_method_ref(data, size, string_ids_off, string_ids_size,
+                       type_ids_off, type_ids_size, proto_ids_off, proto_ids_size,
+                       method_ids_off, method_ids_size, method_idx,
+                       class_name, sizeof(class_name), method_name, sizeof(method_name),
+                       params, sizeof(params), return_type, sizeof(return_type));
+
+        if (access_flags & ACC_NATIVE) {
+            add_native_method(info, dex_name,
+                              class_name[0] ? class_name : owner_class,
+                              method_name, params, return_type);
+        }
+        if (code_off) {
+            scan_code_for_load_calls(info, dex_name, data, size,
+                                     string_ids_off, string_ids_size,
+                                     type_ids_off, type_ids_size,
+                                     proto_ids_off, proto_ids_size,
+                                     method_ids_off, method_ids_size,
+                                     owner_class, method_name, code_off);
+        }
+    }
+}
+
+static void parse_dex(ApkInfo *info, const char *dex_name,
+                      const unsigned char *data, size_t size) {
+    uint32_t string_ids_size;
+    uint32_t string_ids_off;
+    uint32_t type_ids_size;
+    uint32_t type_ids_off;
+    uint32_t proto_ids_size;
+    uint32_t proto_ids_off;
+    uint32_t method_ids_size;
+    uint32_t method_ids_off;
+    uint32_t class_defs_size;
+    uint32_t class_defs_off;
+
+    if (size < 112 || memcmp(data, "dex\n", 4) != 0) {
+        return;
+    }
+
+    string_ids_size = read_u32(data + 56);
+    string_ids_off = read_u32(data + 60);
+    type_ids_size = read_u32(data + 64);
+    type_ids_off = read_u32(data + 68);
+    proto_ids_size = read_u32(data + 72);
+    proto_ids_off = read_u32(data + 76);
+    method_ids_size = read_u32(data + 88);
+    method_ids_off = read_u32(data + 92);
+    class_defs_size = read_u32(data + 96);
+    class_defs_off = read_u32(data + 100);
+
+    if (string_ids_off > size || type_ids_off > size || proto_ids_off > size ||
+        method_ids_off > size || class_defs_off > size) {
+        return;
+    }
+
+    for (uint32_t i = 0; i < class_defs_size; i++) {
+        size_t class_def = class_defs_off + i * 32u;
+        uint32_t class_idx;
+        uint32_t class_data_off;
+        uint32_t static_fields;
+        uint32_t instance_fields;
+        uint32_t direct_methods;
+        uint32_t virtual_methods;
+        uint32_t last_method_idx = 0;
+        size_t offset;
+        char owner_class[256];
+
+        if (class_def + 32u > size) {
+            break;
+        }
+
+        class_idx = read_u32(data + class_def);
+        class_data_off = read_u32(data + class_def + 24u);
+        if (class_data_off == 0 || class_data_off >= size) {
+            continue;
+        }
+
+        format_dex_type(data, size, string_ids_off, string_ids_size,
+                        type_ids_off, type_ids_size, class_idx,
+                        owner_class, sizeof(owner_class));
+
+        offset = class_data_off;
+        if (!read_uleb128(data, size, &offset, &static_fields) ||
+            !read_uleb128(data, size, &offset, &instance_fields) ||
+            !read_uleb128(data, size, &offset, &direct_methods) ||
+            !read_uleb128(data, size, &offset, &virtual_methods)) {
+            continue;
+        }
+
+        for (uint32_t field = 0; field < static_fields + instance_fields; field++) {
+            uint32_t ignored;
+            if (!read_uleb128(data, size, &offset, &ignored) ||
+                !read_uleb128(data, size, &offset, &ignored)) {
+                break;
+            }
+        }
+
+        parse_encoded_methods(info, dex_name, data, size,
+                              string_ids_off, string_ids_size,
+                              type_ids_off, type_ids_size,
+                              proto_ids_off, proto_ids_size,
+                              method_ids_off, method_ids_size,
+                              owner_class, direct_methods, &offset, &last_method_idx);
+        last_method_idx = 0;
+        parse_encoded_methods(info, dex_name, data, size,
+                              string_ids_off, string_ids_size,
+                              type_ids_off, type_ids_size,
+                              proto_ids_off, proto_ids_size,
+                              method_ids_off, method_ids_size,
+                              owner_class, virtual_methods, &offset, &last_method_idx);
+    }
 }
 
 static char *decode_utf16_string(const unsigned char *src, size_t bytes) {
@@ -866,7 +1404,13 @@ static int inspect_apk(const char *apk_path, ApkInfo *info) {
         } else if (strcmp(name, "resources.arsc") == 0) {
             info->has_resources = 1;
         } else if (starts_with(name, "classes") && ends_with(name, ".dex")) {
+            unsigned char *dex_data;
+            size_t dex_size;
             info->dex_count++;
+            if (read_zip_entry(apk, name, &dex_data, &dex_size)) {
+                parse_dex(info, name, dex_data, dex_size);
+                free(dex_data);
+            }
         } else if (starts_with(name, "lib/") && ends_with(name, ".so")) {
             add_native_lib(info, apk, (zip_uint64_t)i, name);
         } else if (starts_with(name, "META-INF/") &&
@@ -926,6 +1470,48 @@ static void print_sig_schemes(const ApkInfo *info) {
     }
 }
 
+static void print_native_bridge_summary(const ApkInfo *info) {
+    int native_printed = info->native_method_count < MAX_NATIVE_METHODS ?
+                         info->native_method_count : MAX_NATIVE_METHODS;
+    int load_printed = info->load_call_count < MAX_LOAD_CALLS ?
+                       info->load_call_count : MAX_LOAD_CALLS;
+
+    puts("  Java/Kotlin -> NDK");
+    printf("    Native declarations: %d\n", info->native_method_count);
+    printf("    Library load calls: %d\n", info->load_call_count);
+
+    puts("    Modules loaded:");
+    if (info->load_call_count == 0) {
+        puts("      none found");
+    } else {
+        for (int i = 0; i < load_printed; i++) {
+            const NativeLoadCall *call = &info->load_calls[i];
+            printf("      %s(%s) in %s.%s [%s]\n",
+                   call->api, call->argument, call->class_name,
+                   call->method_name, call->dex_file);
+        }
+        if (info->load_call_count > MAX_LOAD_CALLS) {
+            printf("      ... %d more load calls omitted\n", info->load_call_count - MAX_LOAD_CALLS);
+        }
+    }
+
+    puts("    Native methods:");
+    if (info->native_method_count == 0) {
+        puts("      none found");
+    } else {
+        for (int i = 0; i < native_printed; i++) {
+            const NativeMethod *method = &info->native_methods[i];
+            printf("      %s.%s(%s): %s [%s]\n",
+                   method->class_name, method->method_name,
+                   method->params, method->return_type, method->dex_file);
+        }
+        if (info->native_method_count > MAX_NATIVE_METHODS) {
+            printf("      ... %d more native declarations omitted\n",
+                   info->native_method_count - MAX_NATIVE_METHODS);
+        }
+    }
+}
+
 static void print_report(const ApkInfo *info) {
     const ManifestInfo *m = &info->manifest;
     int debuggable = m->debuggable == 1;
@@ -975,7 +1561,9 @@ static void print_report(const ApkInfo *info) {
     printf("  Native ABIs: ");
     print_csv_abis(info);
     printf("\n");
-    printf("  Native libraries: %d\n\n", info->native_lib_count);
+    printf("  Native libraries: %d\n", info->native_lib_count);
+    print_native_bridge_summary(info);
+    printf("\n");
 
     puts("FalconPatch");
     printf("  Existing bootstrap: %s\n", info->has_falcon_bootstrap ? "found" : "not found");
@@ -1082,7 +1670,7 @@ static void print_inspect_help(void) {
 
 static void handle_inspect(Command *cmd) {
     const char *apk_path;
-    ApkInfo info;
+    ApkInfo *info;
 
     if (has_flag(cmd, "--help")) {
         print_inspect_help();
@@ -1099,16 +1687,26 @@ static void handle_inspect(Command *cmd) {
         return;
     }
 
-    if (!inspect_apk(apk_path, &info)) {
+    info = (ApkInfo *)calloc(1, sizeof(*info));
+    if (!info) {
+        fprintf(stderr, "Error: Out of memory while preparing inspect state.\n");
+        cmd->exit_code = 1;
+        return;
+    }
+
+    if (!inspect_apk(apk_path, info)) {
+        free(info);
         cmd->exit_code = 1;
         return;
     }
 
     if (has_flag(cmd, "--ndk")) {
-        print_ndk_report(&info);
+        print_ndk_report(info);
     } else {
-        print_report(&info);
+        print_report(info);
     }
+
+    free(info);
 }
 
 CMD_INIT(register_inspect_cmd) {
