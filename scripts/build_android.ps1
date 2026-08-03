@@ -12,16 +12,20 @@ param(
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $androidRoot = Join-Path $repoRoot "android"
-$buildRoot = Join-Path $repoRoot "build\android"
-$distRoot = Join-Path $repoRoot "dist\android"
+$buildRoot = Join-Path $repoRoot "build/android"
+$distRoot = Join-Path $repoRoot "dist/android"
 $luaSourceCache = $null
 
 function Resolve-AndroidSdk {
-    $candidates = @(
-        $env:ANDROID_SDK_ROOT,
-        $env:ANDROID_HOME,
-        (Join-Path $env:LOCALAPPDATA "Android\Sdk")
-    ) | Where-Object { $_ -and (Test-Path $_) }
+    $candidates = @($env:ANDROID_SDK_ROOT, $env:ANDROID_HOME)
+    if ($IsWindows -and $env:LOCALAPPDATA) {
+        $candidates += Join-Path $env:LOCALAPPDATA "Android/Sdk"
+    } elseif ($IsMacOS -and $HOME) {
+        $candidates += Join-Path $HOME "Library/Android/sdk"
+    } elseif ($HOME) {
+        $candidates += Join-Path $HOME "Android/Sdk"
+    }
+    $candidates = $candidates | Where-Object { $_ -and (Test-Path $_) }
     return $candidates | Select-Object -First 1
 }
 
@@ -36,16 +40,16 @@ function Get-LatestDirectory([string]$Parent) {
 
 function Resolve-Ndk([string]$SdkRoot) {
     $candidates = @($env:ANDROID_NDK_HOME, $env:ANDROID_NDK_ROOT) |
-        Where-Object { $_ -and (Test-Path (Join-Path $_ "build\cmake\android.toolchain.cmake")) }
+        Where-Object { $_ -and (Test-Path (Join-Path $_ "build/cmake/android.toolchain.cmake")) }
     if ($candidates) {
         return $candidates | Select-Object -First 1
     }
     $sideBySide = Get-LatestDirectory (Join-Path $SdkRoot "ndk")
-    if ($sideBySide -and (Test-Path (Join-Path $sideBySide "build\cmake\android.toolchain.cmake"))) {
+    if ($sideBySide -and (Test-Path (Join-Path $sideBySide "build/cmake/android.toolchain.cmake"))) {
         return $sideBySide
     }
     $legacy = Join-Path $SdkRoot "ndk-bundle"
-    if (Test-Path (Join-Path $legacy "build\cmake\android.toolchain.cmake")) {
+    if (Test-Path (Join-Path $legacy "build/cmake/android.toolchain.cmake")) {
         return $legacy
     }
     return $null
@@ -58,7 +62,7 @@ function Resolve-JavaTool([string]$Name) {
     }
     if ($env:JAVA_HOME) {
         $suffix = if ($env:OS -eq "Windows_NT") { "$Name.exe" } else { $Name }
-        $candidate = Join-Path $env:JAVA_HOME "bin\$suffix"
+        $candidate = Join-Path $env:JAVA_HOME "bin/$suffix"
         if (Test-Path $candidate) {
             return $candidate
         }
@@ -106,7 +110,7 @@ function Build-BootstrapDex([string]$SdkRoot) {
     if ($LASTEXITCODE -ne 0) {
         throw "Java bootstrap DEX generation failed."
     }
-    $javaDist = Join-Path $distRoot "bootstrap\java"
+    $javaDist = Join-Path $distRoot "bootstrap/java"
     New-Item -ItemType Directory -Force -Path $javaDist | Out-Null
     Copy-Item -Force (Join-Path $javaDex "classes.dex") (Join-Path $javaDist "classes.dex")
 
@@ -138,25 +142,25 @@ function Build-BootstrapDex([string]$SdkRoot) {
     if ($LASTEXITCODE -ne 0) {
         throw "Kotlin bootstrap DEX generation failed."
     }
-    $kotlinDist = Join-Path $distRoot "bootstrap\kotlin"
+    $kotlinDist = Join-Path $distRoot "bootstrap/kotlin"
     New-Item -ItemType Directory -Force -Path $kotlinDist | Out-Null
     Copy-Item -Force (Join-Path $kotlinDex "classes.dex") (Join-Path $kotlinDist "classes.dex")
 }
 
 $sdkRoot = Resolve-AndroidSdk
 if (-not $sdkRoot) {
-    throw "Android SDK not found. Set ANDROID_SDK_ROOT or install it under LOCALAPPDATA\Android\Sdk."
+    throw "Android SDK not found. Set ANDROID_SDK_ROOT or ANDROID_HOME."
 }
 Build-BootstrapDex $sdkRoot
 if ($BootstrapOnly) {
-    Write-Host "Bootstrap artifacts are ready under $distRoot\bootstrap"
+    Write-Host "Bootstrap artifacts are ready under $distRoot/bootstrap"
     return
 }
 $ndkRoot = Resolve-Ndk $sdkRoot
 if (-not $ndkRoot) {
     throw "Android NDK not found. Install an NDK side-by-side package or set ANDROID_NDK_HOME."
 }
-$toolchain = Join-Path $ndkRoot "build\cmake\android.toolchain.cmake"
+$toolchain = Join-Path $ndkRoot "build/cmake/android.toolchain.cmake"
 
 New-Item -ItemType Directory -Force -Path $buildRoot, $distRoot | Out-Null
 foreach ($abi in $Abis) {
@@ -200,9 +204,9 @@ foreach ($abi in $Abis) {
     }
 }
 
-$sdkInclude = Join-Path $distRoot "sdk\include"
+$sdkInclude = Join-Path $distRoot "sdk/include"
 New-Item -ItemType Directory -Force -Path $sdkInclude | Out-Null
-Copy-Item -Force (Join-Path $androidRoot "include\FalconPatch.h") $sdkInclude
+Copy-Item -Force (Join-Path $androidRoot "include/FalconPatch.h") $sdkInclude
 if ($luaSourceCache) {
     Copy-Item -Force (Join-Path $luaSourceCache "lua.h") $sdkInclude
     Copy-Item -Force (Join-Path $luaSourceCache "luaconf.h") $sdkInclude

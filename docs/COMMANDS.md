@@ -193,8 +193,9 @@ Lua files are not stored directly in APK assets. They are serialized into
 `assets/falconpatch/runtime.bin` using the bounded `FPB1` archive format and
 loaded from memory.
 
-See [lua-extensions.md](lua-extensions.md) for the restricted Lua environment,
-built-in modules, API table, and native Lua extension descriptor.
+See the [extension index](extensions/README.md) for the restricted Lua
+environment and separate references for globals, JNI, GUI, background workers,
+pure Lua scripts, and native Lua modules.
 
 ## JSON And YAML Profiles
 
@@ -383,4 +384,4 @@ fpatch inject \
 
 ---
 
-[< Build](BUILD.md) | [Inspect details](inspect.md) | [Native extensions](inject.md) | [Lua extensions](lua-extensions.md)
+[< Build Guide](BUILD.md) | [Inspect Command >](inspect.md)

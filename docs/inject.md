@@ -42,8 +42,8 @@ Any initialization error is logged. The provider returns without terminating
 the application process.
 
 Lua scripts, C extension descriptors, built-in modules, and the restricted
-runtime are documented separately in [lua-extensions.md](lua-extensions.md).
+runtime are documented separately in the [extension index](extensions/README.md).
 
 ---
 
-[< Command tutorial](COMMANDS.md) | [Lua extensions >](lua-extensions.md)
+[< Inspect Command](inspect.md) | [Extensions >](extensions/README.md)

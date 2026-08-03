@@ -158,6 +158,10 @@ if(FPATCH_BUILD_TESTS)
     add_test(NAME artifact-bundle COMMAND fpatch_artifact_tests)
     find_program(FPATCH_PWSH_EXECUTABLE NAMES pwsh)
     if(FPATCH_PWSH_EXECUTABLE)
+        add_test(NAME android-script-paths
+            COMMAND "${FPATCH_PWSH_EXECUTABLE}" -NoProfile -File
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_android_path_tests.ps1"
+                -WorkDirectory "${CMAKE_CURRENT_BINARY_DIR}")
         add_test(NAME artifact-packager
             COMMAND "${FPATCH_PWSH_EXECUTABLE}" -NoProfile -File
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/package_artifacts_tests.ps1"

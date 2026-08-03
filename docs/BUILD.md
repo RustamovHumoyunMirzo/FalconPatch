@@ -103,4 +103,4 @@ and macOS; release-triggered packages are attached to that GitHub release.
 
 ---
 
-[< Go Back](../README.md) | [Next >](COMMANDS.md)
+[< Go Back](../README.md) | [Commands >](COMMANDS.md)

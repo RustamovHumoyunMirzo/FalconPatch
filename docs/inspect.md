@@ -99,4 +99,4 @@ at runtime instead of being a literal string in DEX bytecode.
 
 ---
 
-[< Go Back](COMMANDS.md)
+[< Commands](COMMANDS.md) | [Inject Command >](inject.md)
