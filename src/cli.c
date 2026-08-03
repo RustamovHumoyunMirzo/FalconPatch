@@ -1,196 +1,206 @@
-/*
- * ----------------------------------------------------------------------------
- * HOW TO ADD A NEW COMMAND:
- * ----------------------------------------------------------------------------
- *   1. Create a new `.c` file in `src/commands/` (e.g., `src/commands/hello.c`).
- *   2. Include `"cli.h"`.
- *   3. Write the command handler function.
- *   4. Use the `CMD_INIT` macro to self-register the command before `main()`.
- *
- *   EXAMPLE (`src/commands/hello.c`):
- *
- *     #include <stdio.h>
- *     #include "cli.h"
- *
- *     static void handle_hello(Command *cmd) {
- *         if (has_flag(cmd, "--world")) {
- *             printf("Hello, World!\n");
- *         }
- *
- *         if (has_flag(cmd, "--echo")) {
- *             const char *val = get_flag_value(cmd, "--echo");
- *             printf("Echo: %s\n", val ? val : "(none)");
- *         }
- *     }
- *
- *     CMD_INIT(register_hello_cmd) {
- *         Command *cmd = add_cmd("hello", handle_hello);
- *         if (cmd) {
- *             // add_flag signature:
- *             // (self, flag_name, is_optional, requires_input, allow_dupes)
- *             cmd->add_flag(cmd, "--world", true,  false, false)
- *                ->add_flag(cmd, "--echo",  true,  true,  false);
- *         }
- *     }
- *
- * ----------------------------------------------------------------------------
- * CLI USAGE EXAMPLES:
- * ----------------------------------------------------------------------------
- *   $ fpatch hello --world
- *   Hello, World!
- *
- *   $ fpatch hello --echo "Hello World"
- *   Echo: Hello World
- *
- *   $ fpatch math --add 10 --add 20
- *   Error: Duplicate flag '--add' is not allowed for command 'math'
- *
- *   $ fpatch math
- *   Error: Missing required flag '--add' for command 'math'
- */
-
 #include "cli.h"
+
 #include <stdio.h>
 #include <string.h>
-#include <stdlib.h>
+
+#ifndef FPATCH_VERSION
+#define FPATCH_VERSION "1.0.0"
+#endif
 
 static Command g_commands[MAX_CMDS];
 static size_t g_cmd_count = 0;
 
-static Command* add_flag_impl(Command *self, const char *name, bool is_optional, bool requires_input, bool allow_dupes) {
+static Command *add_flag_impl(Command *self, const char *name, bool is_optional,
+                              bool requires_input, bool allow_dupes) {
+    Flag *flag;
+
     if (self->flag_count >= MAX_FLAGS) {
-        fprintf(stderr, "Error: Max flags exceeded for command '%s'\n", self->name);
+        fprintf(stderr, "Error: Maximum flags exceeded for command '%s'.\n", self->name);
         return self;
     }
-    
-    Flag *f = &self->flags[self->flag_count++];
-    f->name = name;
-    f->is_optional = is_optional;
-    f->requires_input = requires_input;
-    f->allow_dupes = allow_dupes;
-    f->is_present = false;
-    f->is_dupe = false;
-    f->value = NULL;
-    
+
+    flag = &self->flags[self->flag_count++];
+    memset(flag, 0, sizeof(*flag));
+    flag->name = name;
+    flag->is_optional = is_optional;
+    flag->requires_input = requires_input;
+    flag->allow_dupes = allow_dupes;
     return self;
 }
 
-Command* add_cmd(const char *name, void (*handler)(Command *cmd)) {
+Command *add_cmd(const char *name, void (*handler)(Command *cmd)) {
+    Command *cmd;
+
     if (g_cmd_count >= MAX_CMDS) {
-        fprintf(stderr, "Error: Max commands exceeded\n");
+        fprintf(stderr, "Error: Maximum command count exceeded.\n");
         return NULL;
     }
-    
-    Command *cmd = &g_commands[g_cmd_count++];
+
+    cmd = &g_commands[g_cmd_count++];
+    memset(cmd, 0, sizeof(*cmd));
     cmd->name = name;
-    cmd->flag_count = 0;
-    cmd->exit_code = 0;
     cmd->handler = handler;
     cmd->add_flag = add_flag_impl;
-    
     return cmd;
 }
 
-const char* get_flag_value(Command *cmd, const char *flag_name) {
-    for (size_t i = 0; i < cmd->flag_count; i++) {
+void set_cmd_description(Command *cmd, const char *description) {
+    if (cmd) {
+        cmd->description = description;
+    }
+}
+
+static Flag *find_flag(Command *cmd, const char *flag_name) {
+    size_t i;
+
+    for (i = 0; i < cmd->flag_count; i++) {
         if (strcmp(cmd->flags[i].name, flag_name) == 0) {
-            return cmd->flags[i].value;
+            return &cmd->flags[i];
         }
     }
     return NULL;
 }
 
-bool has_flag(Command *cmd, const char *flag_name) {
-    for (size_t i = 0; i < cmd->flag_count; i++) {
-        if (strcmp(cmd->flags[i].name, flag_name) == 0) {
-            return cmd->flags[i].is_present;
-        }
+const char *get_flag_value(Command *cmd, const char *flag_name) {
+    Flag *flag = find_flag(cmd, flag_name);
+    return flag ? flag->value : NULL;
+}
+
+const char *get_flag_value_at(Command *cmd, const char *flag_name, size_t index) {
+    Flag *flag = find_flag(cmd, flag_name);
+    if (!flag || index >= flag->value_count) {
+        return NULL;
     }
-    return false;
+    return flag->values[index];
+}
+
+size_t get_flag_value_count(Command *cmd, const char *flag_name) {
+    Flag *flag = find_flag(cmd, flag_name);
+    return flag ? flag->value_count : 0;
+}
+
+bool has_flag(Command *cmd, const char *flag_name) {
+    Flag *flag = find_flag(cmd, flag_name);
+    return flag ? flag->is_present : false;
 }
 
 bool is_flag_dupe(Command *cmd, const char *flag_name) {
-    for (size_t i = 0; i < cmd->flag_count; i++) {
-        if (strcmp(cmd->flags[i].name, flag_name) == 0) {
-            return cmd->flags[i].is_dupe;
-        }
+    Flag *flag = find_flag(cmd, flag_name);
+    return flag ? flag->is_dupe : false;
+}
+
+static void print_banner(void) {
+    puts("FalconPatch " FPATCH_VERSION);
+    puts("Android testing and security instrumentation for authorized applications.");
+    puts("Author: Rustamov Humoyun Mirzo");
+    puts("Copyright (c) 2026 Rustamov Humoyun Mirzo");
+}
+
+static void print_root_help(void) {
+    size_t i;
+
+    print_banner();
+    puts("");
+    puts("Usage: fpatch <command> [flags]");
+    puts("       fpatch --version");
+    puts("");
+    puts("Commands:");
+    for (i = 0; i < g_cmd_count; i++) {
+        printf("  %-10s %s\n", g_commands[i].name,
+               g_commands[i].description ? g_commands[i].description : "");
     }
-    return false;
+    puts("");
+    puts("Run 'fpatch <command> --help' for command-specific help.");
+}
+
+static void reset_command_flags(Command *cmd) {
+    size_t i;
+
+    cmd->exit_code = 0;
+    for (i = 0; i < cmd->flag_count; i++) {
+        cmd->flags[i].is_present = false;
+        cmd->flags[i].is_dupe = false;
+        cmd->flags[i].value = NULL;
+        cmd->flags[i].value_count = 0;
+    }
 }
 
 bool cli_parse(int argc, char **argv) {
+    const char *cmd_name;
+    Command *matched_cmd = NULL;
+    size_t i;
+
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s <command> [flags]\n", argv[0]);
-        return false;
+        print_banner();
+        puts("Run 'fpatch --help' to list commands.");
+        return true;
     }
 
-    const char *cmd_name = argv[1];
-    Command *matched_cmd = NULL;
+    cmd_name = argv[1];
+    if (strcmp(cmd_name, "--version") == 0 || strcmp(cmd_name, "-v") == 0) {
+        puts(FPATCH_VERSION);
+        return true;
+    }
+    if (strcmp(cmd_name, "--help") == 0 || strcmp(cmd_name, "-h") == 0 ||
+        strcmp(cmd_name, "help") == 0) {
+        print_root_help();
+        return true;
+    }
 
-    for (size_t i = 0; i < g_cmd_count; i++) {
+    for (i = 0; i < g_cmd_count; i++) {
         if (strcmp(g_commands[i].name, cmd_name) == 0) {
             matched_cmd = &g_commands[i];
             break;
         }
     }
-
     if (!matched_cmd) {
-        fprintf(stderr, "Error: Unknown command '%s'\n", cmd_name);
+        fprintf(stderr, "Error: Unknown command '%s'. Run 'fpatch --help'.\n", cmd_name);
         return false;
     }
 
-    // Parse flags
-    for (int i = 2; i < argc; i++) {
-        const char *arg = argv[i];
-        bool flag_found = false;
-
-        for (size_t j = 0; j < matched_cmd->flag_count; j++) {
-            Flag *f = &matched_cmd->flags[j];
-            if (strcmp(f->name, arg) == 0) {
-                flag_found = true;
-
-                // Check for duplicate flag
-                if (f->is_present) {
-                    if (!f->allow_dupes) {
-                        fprintf(stderr, "Error: Duplicate flag '%s' is not allowed for command '%s'\n", f->name, matched_cmd->name);
-                        return false;
-                    }
-                    f->is_dupe = true;
-                }
-
-                f->is_present = true;
-
-                if (f->requires_input) {
-                    if (i + 1 < argc && argv[i + 1][0] != '-') {
-                        f->value = argv[++i]; // Consume next argument as input value
-                    } else {
-                        fprintf(stderr, "Error: Flag '%s' requires a value.\n", f->name);
-                        return false;
-                    }
-                }
-                break;
+    reset_command_flags(matched_cmd);
+    for (i = 2; i < (size_t)argc; i++) {
+        Flag *flag = find_flag(matched_cmd, argv[i]);
+        if (!flag) {
+            fprintf(stderr, "Error: Unrecognized flag '%s' for command '%s'.\n",
+                    argv[i], matched_cmd->name);
+            return false;
+        }
+        if (flag->is_present) {
+            if (!flag->allow_dupes) {
+                fprintf(stderr, "Error: Duplicate flag '%s' is not allowed for command '%s'.\n",
+                        flag->name, matched_cmd->name);
+                return false;
             }
+            flag->is_dupe = true;
         }
+        flag->is_present = true;
 
-        if (!flag_found) {
-            fprintf(stderr, "Error: Unrecognized flag '%s' for command '%s'\n", arg, matched_cmd->name);
+        if (flag->requires_input) {
+            if (i + 1 >= (size_t)argc || argv[i + 1][0] == '-') {
+                fprintf(stderr, "Error: Flag '%s' requires a value.\n", flag->name);
+                return false;
+            }
+            if (flag->value_count >= MAX_FLAG_VALUES) {
+                fprintf(stderr, "Error: Too many values for flag '%s'.\n", flag->name);
+                return false;
+            }
+            flag->value = argv[++i];
+            flag->values[flag->value_count++] = flag->value;
+        }
+    }
+
+    for (i = 0; i < matched_cmd->flag_count; i++) {
+        Flag *flag = &matched_cmd->flags[i];
+        if (!flag->is_optional && !flag->is_present) {
+            fprintf(stderr, "Error: Missing required flag '%s' for command '%s'.\n",
+                    flag->name, matched_cmd->name);
             return false;
         }
     }
 
-    // Validate required flags
-    for (size_t j = 0; j < matched_cmd->flag_count; j++) {
-        Flag *f = &matched_cmd->flags[j];
-        if (!f->is_optional && !f->is_present) {
-            fprintf(stderr, "Error: Missing required flag '%s' for command '%s'\n", f->name, matched_cmd->name);
-            return false;
-        }
-    }
-
-    // Execute callback handler
     if (matched_cmd->handler) {
         matched_cmd->handler(matched_cmd);
     }
-
     return matched_cmd->exit_code == 0;
 }

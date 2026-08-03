@@ -1,0 +1,41 @@
+{
+	"name": "authorized-debug-session",
+	"source": "path/to/app.apk",
+	"output": "build/app-fpatch.apk",
+	"native": {
+		"arm64-v8a": [
+			{
+				"name": "diagnostics",
+				"path": "path/to/arm64-v8a/libdiagnostics.so",
+				"init": "falconpatch_diagnostics_init"
+			}, {
+				"name": "example",
+				"module": "example",
+				"path": "path/to/arm64-v8a/libexample.so"
+			}
+		]
+	},
+	"scripts": {
+		"lua": [
+			{
+				"path": "examples/helper.lua",
+				"module": "helper",
+				"entry": false
+			}, {
+				"path": "examples/hello.lua",
+				"entry": true
+			}
+		]
+	},
+	"strategy": "auto",
+	"bootstrap_language": "java",
+	"assets": ["path/to/debug-overlay.png"],
+	"splits": ["path/to/split_config.arm64_v8a.apk"],
+	"random_libname": true,
+	"signing": {
+		"keystore": "path/to/debug.keystore",
+		"alias": "androiddebugkey",
+		"store_password": "android",
+		"key_password": "android"
+	}
+}

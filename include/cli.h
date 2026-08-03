@@ -16,8 +16,9 @@
         __attribute__((constructor)) static void func(void)
 #endif
 
-#define MAX_FLAGS 16
+#define MAX_FLAGS 32
 #define MAX_CMDS 16
+#define MAX_FLAG_VALUES 64
 
 typedef struct {
     const char *name;
@@ -25,12 +26,15 @@ typedef struct {
     bool requires_input;
     bool allow_dupes;      // If false, parsing fails when flag is repeated
     bool is_present;
-    bool is_dupe;         // Tracks whether the flag was passed more than once
-    const char *value;    // Holds the last value passed
+    bool is_dupe;
+    const char *value;
+    const char *values[MAX_FLAG_VALUES];
+    size_t value_count;
 } Flag;
 
 typedef struct Command {
     const char *name;
+    const char *description;
     Flag flags[MAX_FLAGS];
     size_t flag_count;
     int exit_code;
@@ -40,8 +44,11 @@ typedef struct Command {
 } Command;
 
 Command* add_cmd(const char *name, void (*handler)(Command *cmd));
+void set_cmd_description(Command *cmd, const char *description);
 bool cli_parse(int argc, char **argv);
 const char* get_flag_value(Command *cmd, const char *flag_name);
+const char* get_flag_value_at(Command *cmd, const char *flag_name, size_t index);
+size_t get_flag_value_count(Command *cmd, const char *flag_name);
 bool has_flag(Command *cmd, const char *flag_name);
 bool is_flag_dupe(Command *cmd, const char *flag_name);
 

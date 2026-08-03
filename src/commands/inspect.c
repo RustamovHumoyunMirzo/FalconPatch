@@ -60,6 +60,7 @@ static void handle_inspect(Command *cmd) {
 CMD_INIT(register_inspect_cmd) {
     Command *inspect = add_cmd("inspect", handle_inspect);
     if (inspect) {
+        set_cmd_description(inspect, "Inspect APK metadata, signing, DEX, and native code.");
         inspect->add_flag(inspect, "--source", true, true, false)
                ->add_flag(inspect, "--apk", true, true, false)
                ->add_flag(inspect, "--ndk", true, false, false)
