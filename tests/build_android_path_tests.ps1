@@ -10,9 +10,15 @@ $testRoot = Join-Path ([IO.Path]::GetFullPath($WorkDirectory)) `
 $previousSdkRoot = $env:ANDROID_SDK_ROOT
 $previousAndroidHome = $env:ANDROID_HOME
 $previousLocalAppData = $env:LOCALAPPDATA
+$expectedLuaHash = "4f18ddae154e793e46eeab727c59ef1c0c0c2b744e7b94219710d76f530629ae"
 
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 try {
+    $androidCmake = Get-Content -Raw (Join-Path $repoRoot "android/CMakeLists.txt")
+    if ($androidCmake -notmatch "URL_HASH\s+SHA256=$expectedLuaHash") {
+        throw "Lua 5.4.8 does not use the verified upstream SHA-256."
+    }
+
     $env:ANDROID_SDK_ROOT = $testRoot
     $env:ANDROID_HOME = $null
     $env:LOCALAPPDATA = $null

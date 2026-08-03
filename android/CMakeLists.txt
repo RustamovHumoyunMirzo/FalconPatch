@@ -13,7 +13,7 @@ set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
 FetchContent_Declare(
     lua_source
     URL https://www.lua.org/ftp/lua-5.4.8.tar.gz
-    URL_HASH SHA256=4f18ddae154e793e46eeab727c59ef1c0c2b744e7b94219710d76f530629ae
+    URL_HASH SHA256=4f18ddae154e793e46eeab727c59ef1c0c0c2b744e7b94219710d76f530629ae
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(lua_source)
