@@ -18,6 +18,9 @@ try {
     if ($androidCmake -notmatch "URL_HASH\s+SHA256=$expectedLuaHash") {
         throw "Lua 5.4.8 does not use the verified upstream SHA-256."
     }
+    if ($androidCmake -match 'target_compile_definitions\s*\(\s*fpatch_lua[^\)]*LUA_USE_POSIX') {
+        throw "Lua POSIX mode requires Android API 24 and cannot be used by the API 21 runtime."
+    }
 
     $env:ANDROID_SDK_ROOT = $testRoot
     $env:ANDROID_HOME = $null

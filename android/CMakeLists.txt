@@ -56,7 +56,8 @@ set(LUA_SOURCES
 
 add_library(fpatch_lua STATIC ${LUA_SOURCES})
 target_include_directories(fpatch_lua PUBLIC ${LUA_SRC_DIR})
-target_compile_definitions(fpatch_lua PRIVATE LUA_USE_POSIX)
+# Lua's POSIX mode requires fseeko/ftello, which Bionic exposes from API 24.
+# The API 21 runtime uses Lua's ANSI stdio fallback instead.
 target_compile_options(fpatch_lua PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
 add_library(falconpatch SHARED
