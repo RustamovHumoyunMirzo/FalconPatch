@@ -8,6 +8,12 @@
 #define FPATCH_MAX_TARGET_ABIS 16
 
 typedef struct {
+    char abi[32];
+    const unsigned char *data;
+    size_t size;
+} FpatchRuntimePayload;
+
+typedef struct {
     const FpatchInjectProfile *profile;
     const char *package_name;
     const char *runtime_library;
@@ -17,6 +23,8 @@ typedef struct {
     size_t payload_size;
     char target_abis[FPATCH_MAX_TARGET_ABIS][32];
     size_t target_abi_count;
+    FpatchRuntimePayload runtimes[FPATCH_MAX_TARGET_ABIS];
+    size_t runtime_count;
 } FpatchArchivePatch;
 
 int fpatch_patch_base_archive(const char *source_path, const char *output_path,

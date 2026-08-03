@@ -11,3 +11,5 @@
 - Added Java and optional Kotlin bootstrap builds for embedded DEX output.
 - Added embedded `FPB1` Lua payloads, user assets, native initializer support, and random runtime filenames.
 - Added host/Android PowerShell build scripts, examples, tests, and command documentation.
+- Added checksum-verified prebuilt artifact packages and `inject --artifacts`.
+- Added commit CI plus manual/release packaging for Windows, Linux, and macOS on x86_64 and arm64.

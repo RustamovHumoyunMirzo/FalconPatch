@@ -1,5 +1,6 @@
 #include "cli.h"
 #include "utils/apk_patcher.h"
+#include "utils/artifact_bundle.h"
 #include "utils/file_utils.h"
 #include "utils/inject_profile.h"
 #include "utils/payload_archive.h"
@@ -17,6 +18,7 @@ static void print_inject_help(void) {
     puts("Inputs:");
     puts("  --source, --apk <file>      Base APK (CLI values override the profile).");
     puts("  --profile <file>            JSON or YAML injection profile.");
+    puts("  --artifacts <bundle.tar.gz> Prebuilt runtime/bootstrap artifact package.");
     puts("  --native <file.so>          Native library; repeatable, ABI inferred from ELF.");
     puts("  --native-init <lib=symbol>  Initializer for a native library; repeatable.");
     puts("  --native-module <lib=name>  Lua require name for a native extension.");
@@ -130,18 +132,47 @@ static int apply_native_setting(Command *cmd, const char *flag,
     return 1;
 }
 
-static void print_dry_run(const FpatchInjectProfile *profile) {
+static int print_dry_run(const FpatchInjectProfile *profile,
+                         char *error, size_t error_size) {
+    FpatchArtifactBundle bundle;
+    size_t runtime_count = 0;
+    size_t bootstrap_count = 0;
+    size_t i;
+
+    fpatch_artifact_bundle_init(&bundle);
+    if (profile->artifacts[0] &&
+        !fpatch_artifact_bundle_load(profile->artifacts, &bundle, error, error_size)) {
+        return 0;
+    }
+    for (i = 0; i < bundle.file_count; i++) {
+        if (strcmp(bundle.files[i].kind, "runtime") == 0) {
+            runtime_count++;
+        } else if (strcmp(bundle.files[i].kind, "bootstrap-dex") == 0) {
+            bootstrap_count++;
+        }
+    }
     puts("Injection plan");
     printf("  Source: %s\n", profile->source);
     printf("  Output: %s\n", profile->output[0] ? profile->output : "derived from source");
     printf("  Strategy: %s\n", profile->strategy);
     printf("  Bootstrap language: %s\n", profile->bootstrap_language);
+    if (profile->artifacts[0]) {
+        printf("  Artifacts: %s (%s/%s, FalconPatch %s)\n",
+               bundle.package, bundle.platform, bundle.arch,
+               bundle.falconpatch_version);
+        printf("  Artifact resources: %zu runtimes, %zu bootstrap DEX files\n",
+               runtime_count, bootstrap_count);
+    } else {
+        puts("  Artifacts: embedded in fpatch");
+    }
     printf("  Native libraries: %zu\n", profile->native_count);
     printf("  Lua scripts: %zu\n", profile->lua_count);
     printf("  Assets: %zu\n", profile->asset_count);
     printf("  Split APKs: %zu\n", profile->split_count);
     printf("  Random runtime name: %s\n", profile->random_libname ? "yes" : "no");
     printf("  Signing: %s\n", profile->no_sign ? "disabled" : "enabled");
+    fpatch_artifact_bundle_free(&bundle);
+    return 1;
 }
 
 static int merge_command_line(Command *cmd, FpatchInjectProfile *profile,
@@ -156,6 +187,8 @@ static int merge_command_line(Command *cmd, FpatchInjectProfile *profile,
                   error, error_size) ||
         !set_text(profile->output, sizeof(profile->output), get_flag_value(cmd, "--output"),
                   error, error_size) ||
+        !set_text(profile->artifacts, sizeof(profile->artifacts),
+                  get_flag_value(cmd, "--artifacts"), error, error_size) ||
         !set_text(profile->strategy, sizeof(profile->strategy), get_flag_value(cmd, "--strategy"),
                   error, error_size) ||
         !set_text(profile->bootstrap_language, sizeof(profile->bootstrap_language),
@@ -220,7 +253,10 @@ static void handle_inject(Command *cmd) {
         return;
     }
     if (has_flag(cmd, "--dry-run")) {
-        print_dry_run(profile);
+        if (!print_dry_run(profile, error, sizeof(error))) {
+            fprintf(stderr, "Error: %s\n", error);
+            cmd->exit_code = 1;
+        }
         free(profile);
         free(result);
         return;
@@ -236,6 +272,7 @@ static void handle_inject(Command *cmd) {
     puts("FalconPatch injection complete");
     printf("  Strategy: %s\n", result->strategy_used);
     printf("  Bootstrap: %s\n", result->bootstrap_language);
+    printf("  Artifacts: %s\n", result->artifact_package);
     printf("  Runtime library: lib%s.so\n", result->runtime_library);
     printf("  Signing: %s\n", result->resigned ? "resigned and verified" : "unsigned");
     puts("  Outputs:");
@@ -254,6 +291,7 @@ CMD_INIT(register_inject_cmd) {
               ->add_flag(inject, "--apk", true, true, false)
               ->add_flag(inject, "--output", true, true, false)
               ->add_flag(inject, "--profile", true, true, false)
+              ->add_flag(inject, "--artifacts", true, true, false)
               ->add_flag(inject, "--native", true, true, true)
               ->add_flag(inject, "--native-init", true, true, true)
               ->add_flag(inject, "--native-module", true, true, true)

@@ -1,4 +1,4 @@
-# Injection And Extension Reference
+# Injection And Native Extension Reference
 
 The full workflow and all CLI flags are documented in
 [COMMANDS.md](COMMANDS.md). This page focuses on the native extension boundary.
@@ -26,38 +26,6 @@ signature. Return `0` for success and nonzero to disable FalconPatch startup.
 
 Do not delete `application_context`. It is owned by the runtime.
 
-## Lua Extension Descriptor
-
-```c
-#include "FalconPatch.h"
-#include <lauxlib.h>
-
-static int open_module(lua_State *state) {
-    lua_newtable(state);
-    return 1;
-}
-
-FPATCH_EXPORT const FalconPatchLuaModule *falconpatch_lua_module(void) {
-    static const FalconPatchLuaModule module = {
-        FPATCH_EXTENSION_ABI,
-        "myextension",
-        open_module
-    };
-    return &module;
-}
-```
-
-Lua can then load it without adding a global:
-
-```lua
-local extension = require("myextension")
-```
-
-The extension and runtime must use the same Lua ABI. FalconPatch 1.0.0 embeds
-Lua 5.4.8 and ships matching headers. Link extensions against the runtime for
-their target ABI so Lua C API symbols resolve. See the native extension example
-for an imported-library CMake target.
-
 ## Payload Order
 
 At process startup FalconPatch performs this sequence:
@@ -73,15 +41,9 @@ At process startup FalconPatch performs this sequence:
 Any initialization error is logged. The provider returns without terminating
 the application process.
 
-## Built-In Modules
-
-- `require("jni")`: package name, SDK level, and no-argument static Java string calls
-- `require("gui")`: main-thread Android toast
-- `require("background-worker")`: detached restricted Lua jobs
-
-Only `fpatch.log` and `fpatch.version` are added to the small global `fpatch`
-table. Filesystem and arbitrary C-module loaders are disabled.
+Lua scripts, C extension descriptors, built-in modules, and the restricted
+runtime are documented separately in [lua-extensions.md](lua-extensions.md).
 
 ---
 
-[< Command tutorial](COMMANDS.md)
+[< Command tutorial](COMMANDS.md) | [Lua extensions >](lua-extensions.md)

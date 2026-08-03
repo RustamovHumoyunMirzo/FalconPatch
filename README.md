@@ -21,11 +21,16 @@ fpatch inspect --source app.apk
 fpatch inspect --source app.apk --ndk
 fpatch inject --source app.apk --lua-entry smoke.lua
 fpatch inject --profile example_fp_profile.yaml
+fpatch inject --source app.apk --lua-entry smoke.lua --artifacts windows-x86_64.tar.gz
 ```
 
 `inspect` reports manifest, signing, DEX, JNI, and ELF details. `inject` patches
 binary Android XML directly, adds the embedded bootstrap/runtime and payload,
 aligns the APK, and resigns the base plus supplied splits with one key.
+Official release packages provide `fpatch`, every Android runtime ABI, both
+bootstrap DEX variants, and SDK headers, so using `--artifacts` does not require
+building the NDK, Java, or Kotlin projects locally.
 
 See the [full command tutorial](docs/COMMANDS.md), [build guide](docs/BUILD.md),
-and [injection/extension reference](docs/inject.md).
+[native extension reference](docs/inject.md), and
+[Lua extension reference](docs/lua-extensions.md).

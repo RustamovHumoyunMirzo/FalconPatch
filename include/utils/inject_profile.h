@@ -26,6 +26,7 @@ typedef struct {
 typedef struct {
     char source[FPATCH_PATH_MAX];
     char output[FPATCH_PATH_MAX];
+    char artifacts[FPATCH_PATH_MAX];
     char profile_name[128];
     char strategy[32];
     char bootstrap_language[16];

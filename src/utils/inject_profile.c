@@ -439,6 +439,7 @@ int fpatch_profile_load(const char *path, FpatchInjectProfile *profile,
     char directory[FPATCH_PATH_MAX];
     char source_value[FPATCH_PATH_MAX] = "";
     char output_value[FPATCH_PATH_MAX] = "";
+    char artifacts_value[FPATCH_PATH_MAX] = "";
     const char *random_value;
     int parser_ready = 0;
     int document_ready = 0;
@@ -480,6 +481,8 @@ int fpatch_profile_load(const char *path, FpatchInjectProfile *profile,
                            sizeof(source_value), error, error_size) ||
         !load_scalar_field(&document, root, "output", output_value,
                            sizeof(output_value), error, error_size) ||
+        !load_scalar_field(&document, root, "artifacts", artifacts_value,
+                           sizeof(artifacts_value), error, error_size) ||
         !load_scalar_field(&document, root, "strategy", profile->strategy,
                            sizeof(profile->strategy), error, error_size) ||
         !load_scalar_field(&document, root, "bootstrap_language", profile->bootstrap_language,
@@ -487,7 +490,9 @@ int fpatch_profile_load(const char *path, FpatchInjectProfile *profile,
         !resolve_path(profile->source, sizeof(profile->source), directory,
                       source_value, error, error_size) ||
         !resolve_path(profile->output, sizeof(profile->output), directory,
-                      output_value, error, error_size)) {
+                      output_value, error, error_size) ||
+        !resolve_path(profile->artifacts, sizeof(profile->artifacts), directory,
+                      artifacts_value, error, error_size)) {
         goto cleanup;
     }
 

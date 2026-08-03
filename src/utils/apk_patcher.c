@@ -2,6 +2,7 @@
 #include "utils/apk_archive.h"
 #include "utils/apk_inspector.h"
 #include "utils/apk_signer.h"
+#include "utils/artifact_bundle.h"
 #include "utils/embedded_resources.h"
 #include "utils/file_utils.h"
 #include "utils/payload_archive.h"
@@ -16,6 +17,20 @@ typedef struct {
     char raw[FPATCH_PATH_MAX];
     char ready[FPATCH_PATH_MAX];
 } OutputArtifact;
+
+static FpatchEmbeddedResource find_resource(const FpatchArtifactBundle *bundle,
+                                            const char *kind, const char *name) {
+    FpatchEmbeddedResource resource = {0};
+    if (bundle) {
+        const FpatchArtifactFile *file = fpatch_artifact_bundle_find(bundle, kind, name);
+        if (file) {
+            resource.data = file->data;
+            resource.size = file->size;
+        }
+        return resource;
+    }
+    return fpatch_embedded_find(kind, name);
+}
 
 static int same_path(const char *left, const char *right) {
 #ifdef _WIN32
@@ -146,7 +161,8 @@ static int validate_inputs(FpatchInjectProfile *profile,
     return 1;
 }
 
-static int choose_default_abis(char abis[16][32], size_t *abi_count,
+static int choose_default_abis(const FpatchArtifactBundle *bundle,
+                               char abis[16][32], size_t *abi_count,
                                char *error, size_t error_size) {
     static const char *supported[] = {
         "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
@@ -157,27 +173,39 @@ static int choose_default_abis(char abis[16][32], size_t *abi_count,
         return 1;
     }
     for (i = 0; i < sizeof(supported) / sizeof(supported[0]); i++) {
-        FpatchEmbeddedResource runtime = fpatch_embedded_find("runtime", supported[i]);
+        FpatchEmbeddedResource runtime = find_resource(bundle, "runtime", supported[i]);
         if (runtime.size && !add_abi(abis, abi_count, supported[i])) {
             break;
         }
     }
     if (!*abi_count) {
-        snprintf(error, error_size,
-                 "No embedded Android runtime is available. Run scripts/build_android.ps1, then rebuild fpatch.");
+        if (bundle) {
+            snprintf(error, error_size,
+                     "Artifact package %s contains no supported Android runtime.", bundle->package);
+        } else {
+            snprintf(error, error_size,
+                     "No embedded Android runtime is available. Supply --artifacts or rebuild fpatch after scripts/build_android.ps1.");
+        }
         return 0;
     }
     return 1;
 }
 
-static int validate_runtime_abis(char abis[16][32], size_t abi_count,
+static int validate_runtime_abis(const FpatchArtifactBundle *bundle,
+                                 char abis[16][32], size_t abi_count,
                                  char *error, size_t error_size) {
     size_t i;
     for (i = 0; i < abi_count; i++) {
-        if (!fpatch_embedded_find("runtime", abis[i]).size) {
-            snprintf(error, error_size,
-                     "fpatch has no embedded libfalconpatch.so for %s. Rebuild the Android runtime and host CLI.",
-                     abis[i]);
+        if (!find_resource(bundle, "runtime", abis[i]).size) {
+            if (bundle) {
+                snprintf(error, error_size,
+                         "Artifact package %s has no libfalconpatch.so for %s.",
+                         bundle->package, abis[i]);
+            } else {
+                snprintf(error, error_size,
+                         "fpatch has no embedded libfalconpatch.so for %s. Supply --artifacts or rebuild the Android runtime and host CLI.",
+                         abis[i]);
+            }
             return 0;
         }
     }
@@ -249,6 +277,8 @@ int fpatch_inject_apk(const FpatchInjectProfile *requested_profile,
                       FpatchInjectResult *result,
                       char *error, size_t error_size) {
     FpatchInjectProfile *profile = NULL;
+    FpatchArtifactBundle bundle;
+    const FpatchArtifactBundle *external_bundle = NULL;
     ManifestInfo base_manifest;
     FpatchEmbeddedResource dex;
     unsigned char *payload = NULL;
@@ -262,6 +292,7 @@ int fpatch_inject_apk(const FpatchInjectProfile *requested_profile,
     int success = 0;
 
     memset(result, 0, sizeof(*result));
+    fpatch_artifact_bundle_init(&bundle);
     memset(&base_manifest, 0, sizeof(base_manifest));
     memset(artifacts, 0, sizeof(artifacts));
     error[0] = '\0';
@@ -271,8 +302,20 @@ int fpatch_inject_apk(const FpatchInjectProfile *requested_profile,
         return 0;
     }
     *profile = *requested_profile;
-    if (!fpatch_profile_validate(profile, error, error_size) ||
-        !collect_apk_info(profile->source, &base_manifest,
+    if (!fpatch_profile_validate(profile, error, error_size)) {
+        goto done;
+    }
+    if (profile->artifacts[0]) {
+        if (!fpatch_artifact_bundle_load(profile->artifacts, &bundle, error, error_size)) {
+            goto done;
+        }
+        external_bundle = &bundle;
+        snprintf(result->artifact_package, sizeof(result->artifact_package), "%s",
+                 bundle.package);
+    } else {
+        snprintf(result->artifact_package, sizeof(result->artifact_package), "embedded");
+    }
+    if (!collect_apk_info(profile->source, &base_manifest,
                           result->target_abis, &result->target_abi_count,
                           error, error_size)) {
         goto done;
@@ -290,18 +333,26 @@ int fpatch_inject_apk(const FpatchInjectProfile *requested_profile,
     }
     if (!validate_inputs(profile, result->target_abis, &result->target_abi_count,
                          error, error_size) ||
-        !choose_default_abis(result->target_abis, &result->target_abi_count,
+        !choose_default_abis(external_bundle, result->target_abis,
+                             &result->target_abi_count,
                              error, error_size) ||
-        !validate_runtime_abis(result->target_abis, result->target_abi_count,
+        !validate_runtime_abis(external_bundle, result->target_abis,
+                               result->target_abi_count,
                                error, error_size)) {
         goto done;
     }
 
-    dex = fpatch_embedded_find("bootstrap-dex", profile->bootstrap_language);
+    dex = find_resource(external_bundle, "bootstrap-dex", profile->bootstrap_language);
     if (!dex.size) {
-        snprintf(error, error_size,
-                 "No embedded %s bootstrap DEX is available. Run scripts/build_android.ps1 -BootstrapOnly and rebuild fpatch.",
-                 profile->bootstrap_language);
+        if (external_bundle) {
+            snprintf(error, error_size,
+                     "Artifact package %s has no %s bootstrap DEX.",
+                     external_bundle->package, profile->bootstrap_language);
+        } else {
+            snprintf(error, error_size,
+                     "No embedded %s bootstrap DEX is available. Supply --artifacts or rebuild fpatch after scripts/build_android.ps1 -BootstrapOnly.",
+                     profile->bootstrap_language);
+        }
         goto done;
     }
     if (!profile->output[0] &&
@@ -367,6 +418,16 @@ int fpatch_inject_apk(const FpatchInjectProfile *requested_profile,
     archive_patch.target_abi_count = result->target_abi_count;
     memcpy(archive_patch.target_abis, result->target_abis,
            sizeof(archive_patch.target_abis));
+    for (i = 0; i < result->target_abi_count; i++) {
+        FpatchEmbeddedResource runtime =
+            find_resource(external_bundle, "runtime", result->target_abis[i]);
+        snprintf(archive_patch.runtimes[i].abi,
+                 sizeof(archive_patch.runtimes[i].abi), "%s",
+                 result->target_abis[i]);
+        archive_patch.runtimes[i].data = runtime.data;
+        archive_patch.runtimes[i].size = runtime.size;
+        archive_patch.runtime_count++;
+    }
     if (!fpatch_patch_base_archive(artifacts[0].source, artifacts[0].raw,
                                    &archive_patch, result->strategy_used,
                                    sizeof(result->strategy_used),
@@ -409,6 +470,7 @@ int fpatch_inject_apk(const FpatchInjectProfile *requested_profile,
 done:
     cleanup_artifacts(artifacts, profile ? profile->split_count + 1 : 0);
     free(payload);
+    fpatch_artifact_bundle_free(&bundle);
     free(profile);
     return success;
 }

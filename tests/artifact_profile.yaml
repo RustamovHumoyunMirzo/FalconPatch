@@ -1,0 +1,2 @@
+source: fixtures/app.apk
+artifacts: bundles/linux-arm64.tar.gz

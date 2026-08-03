@@ -113,7 +113,7 @@ add_executable(fpatch
 
 target_include_directories(fpatch PRIVATE include)
 target_compile_definitions(fpatch PRIVATE FPATCH_VERSION="${PROJECT_VERSION}")
-target_link_libraries(fpatch PRIVATE zip yaml)
+target_link_libraries(fpatch PRIVATE zip yaml ZLIB::ZLIB)
 
 if(MSVC)
     target_compile_definitions(fpatch PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -142,6 +142,28 @@ if(FPATCH_BUILD_TESTS)
         target_compile_options(fpatch_profile_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME profile-and-payload COMMAND fpatch_profile_tests)
+    add_executable(fpatch_artifact_tests
+        tests/artifact_bundle_tests.c
+        src/utils/artifact_bundle.c
+        src/utils/sha256.c
+    )
+    target_include_directories(fpatch_artifact_tests PRIVATE include)
+    target_link_libraries(fpatch_artifact_tests PRIVATE yaml ZLIB::ZLIB)
+    if(MSVC)
+        target_compile_definitions(fpatch_artifact_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+        target_compile_options(fpatch_artifact_tests PRIVATE /W4)
+    else()
+        target_compile_options(fpatch_artifact_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME artifact-bundle COMMAND fpatch_artifact_tests)
+    find_program(FPATCH_PWSH_EXECUTABLE NAMES pwsh)
+    if(FPATCH_PWSH_EXECUTABLE)
+        add_test(NAME artifact-packager
+            COMMAND "${FPATCH_PWSH_EXECUTABLE}" -NoProfile -File
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/package_artifacts_tests.ps1"
+                -Fpatch "$<TARGET_FILE:fpatch>"
+                -WorkDirectory "${CMAKE_CURRENT_BINARY_DIR}")
+    endif()
     add_test(NAME cli-version COMMAND fpatch --version)
     add_test(NAME cli-inject-dry-run
              COMMAND fpatch inject --profile "${CMAKE_CURRENT_SOURCE_DIR}/example_fp_profile.yaml" --dry-run)

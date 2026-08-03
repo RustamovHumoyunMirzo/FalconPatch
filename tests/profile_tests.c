@@ -99,6 +99,30 @@ done:
     return passed;
 }
 
+static int test_artifact_profile_path(void) {
+    FpatchInjectProfile *profile = (FpatchInjectProfile *)malloc(sizeof(*profile));
+    char path[FPATCH_PATH_MAX];
+    char expected[FPATCH_PATH_MAX];
+    char error[512] = "";
+    int passed = 0;
+
+    if (!profile ||
+        !make_path(path, sizeof(path), "tests/artifact_profile.yaml") ||
+        !make_path(expected, sizeof(expected), "tests/bundles/linux-arm64.tar.gz")) {
+        goto done;
+    }
+    fpatch_profile_init(profile);
+    if (!fpatch_profile_load(path, profile, error, sizeof(error))) {
+        fprintf(stderr, "Artifact profile: %s\n", error);
+        goto done;
+    }
+    passed = strcmp(profile->artifacts, expected) == 0;
+
+done:
+    free(profile);
+    return passed;
+}
+
 int main(void) {
     if (!test_json_profile()) {
         fprintf(stderr, "JSON profile test failed.\n");
@@ -110,6 +134,10 @@ int main(void) {
     }
     if (!test_native_abi_metadata()) {
         fprintf(stderr, "Native ABI metadata test failed.\n");
+        return 1;
+    }
+    if (!test_artifact_profile_path()) {
+        fprintf(stderr, "Artifact profile path test failed.\n");
         return 1;
     }
     puts("Profile and payload tests passed.");

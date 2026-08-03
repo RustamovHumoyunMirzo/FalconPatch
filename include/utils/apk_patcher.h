@@ -11,6 +11,7 @@ typedef struct {
     char output_paths[FPATCH_MAX_OUTPUT_APKS][FPATCH_PATH_MAX];
     size_t output_count;
     char runtime_library[64];
+    char artifact_package[128];
     char strategy_used[32];
     char bootstrap_language[16];
     char target_abis[16][32];

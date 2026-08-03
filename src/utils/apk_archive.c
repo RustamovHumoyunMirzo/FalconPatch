@@ -1,6 +1,5 @@
 #include "utils/apk_archive.h"
 #include "utils/axml.h"
-#include "utils/embedded_resources.h"
 #include "utils/file_utils.h"
 #include "utils/payload_archive.h"
 
@@ -276,6 +275,19 @@ int fpatch_patch_base_archive(const char *source_path, const char *output_path,
     int make_debuggable = strcmp(patch->profile->strategy, "provider-debuggable") == 0;
     int success = 0;
 
+    if (patch->runtime_count != patch->target_abi_count) {
+        snprintf(error, error_size, "Runtime payload count does not match target ABI count.");
+        return 0;
+    }
+    for (i = 0; i < patch->target_abi_count; i++) {
+        if (!patch->runtimes[i].data || !patch->runtimes[i].size ||
+            strcmp(patch->runtimes[i].abi, patch->target_abis[i]) != 0) {
+            snprintf(error, error_size, "Runtime payload does not match target ABI %s.",
+                     patch->target_abis[i]);
+            return 0;
+        }
+    }
+
     source = zip_open(source_path, ZIP_RDONLY, &zip_error);
     if (!source) {
         snprintf(error, error_size, "Cannot open source APK (zip error %d): %s",
@@ -328,20 +340,19 @@ int fpatch_patch_base_archive(const char *source_path, const char *output_path,
                           error, error_size)) {
         goto done;
     }
-    for (i = 0; i < patch->target_abi_count; i++) {
-        FpatchEmbeddedResource runtime =
-            fpatch_embedded_find("runtime", patch->target_abis[i]);
+    for (i = 0; i < patch->runtime_count; i++) {
+        const FpatchRuntimePayload *runtime = &patch->runtimes[i];
         char filename[192];
         char destination[512];
         snprintf(filename, sizeof(filename), "lib%s.so", patch->runtime_library);
-        if (!runtime.size ||
-            !native_destination(patch->target_abis[i], filename,
+        if (!runtime->size ||
+            !native_destination(runtime->abi, filename,
                                 destination, sizeof(destination)) ||
-            !add_buffer_entry(target, destination, runtime.data, runtime.size,
+            !add_buffer_entry(target, destination, runtime->data, runtime->size,
                               ZIP_CM_STORE, error, error_size)) {
             if (!error[0]) {
-                snprintf(error, error_size, "Embedded runtime is missing for ABI %s.",
-                         patch->target_abis[i]);
+                snprintf(error, error_size, "Runtime is missing for ABI %s.",
+                         runtime->abi);
             }
             goto done;
         }

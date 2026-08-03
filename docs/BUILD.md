@@ -82,6 +82,25 @@ If `inject` says no embedded runtime is available, run the Android build and
 then rebuild the host executable. A direct host-only build still provides
 `inspect`, profile dry-runs, and global help/version commands.
 
+## Artifact Packages
+
+Package an already-built host executable and complete `dist/android` tree:
+
+```powershell
+./scripts/package_artifacts.ps1 -Platform windows -Arch x86_64
+```
+
+The output is `dist/packages/windows-x86_64.tar.gz`. The packaging script
+requires all four runtime ABIs, Java and Kotlin DEX files, and the FalconPatch
+and Lua SDK headers. It writes a versioned JSON manifest with explicit resource
+paths, sizes, and SHA-256 values.
+
+`.github/workflows/ci.yml` builds the NDK runtime and both bootstraps before
+building and testing the host project on Windows, Linux, and macOS for every
+push and pull request. `.github/workflows/artifacts.yml` runs manually or when a
+release is published. It creates x86_64 and arm64 packages for Windows, Linux,
+and macOS; release-triggered packages are attached to that GitHub release.
+
 ---
 
 [< Go Back](../README.md) | [Next >](COMMANDS.md)

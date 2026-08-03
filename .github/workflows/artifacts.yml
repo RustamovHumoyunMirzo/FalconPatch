@@ -1,0 +1,156 @@
+name: Release artifacts
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    name: Android runtime and bootstraps
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build packages
+        shell: bash
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.3.13750724"
+
+      - name: Install Kotlin compiler
+        shell: pwsh
+        run: |
+          $version = "2.3.21"
+          $archive = Join-Path $env:RUNNER_TEMP "kotlin-compiler.zip"
+          Invoke-WebRequest `
+            -Uri "https://github.com/JetBrains/kotlin/releases/download/v$version/kotlin-compiler-$version.zip" `
+            -OutFile $archive
+          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expected = "a8cfc1d62cd4d0de4d04f42575e40135bd620588c17d568a20eb9c7c259af14f"
+          if ($actual -ne $expected) { throw "Kotlin compiler checksum mismatch." }
+          $tools = Join-Path $env:RUNNER_TEMP "kotlin"
+          Expand-Archive -LiteralPath $archive -DestinationPath $tools
+          Get-ChildItem (Join-Path $tools "kotlinc/bin") -File | ForEach-Object {
+            & chmod +x $_.FullName
+          }
+          (Join-Path $tools "kotlinc/bin") | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Build NDK runtime and Java/Kotlin bootstraps
+        shell: pwsh
+        run: ./scripts/build_android.ps1 -Configuration Release
+
+      - name: Upload Android build outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release
+          path: dist/android
+          if-no-files-found: error
+          retention-days: 3
+
+  package:
+    name: Package ${{ matrix.platform }}-${{ matrix.arch }}
+    needs: android
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            arch: x86_64
+            runner: windows-latest
+          - platform: windows
+            arch: arm64
+            runner: windows-11-arm
+          - platform: linux
+            arch: x86_64
+            runner: ubuntu-latest
+          - platform: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - platform: macos
+            arch: x86_64
+            runner: macos-15-intel
+          - platform: macos
+            arch: arm64
+            runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Verify package host identity
+        shell: pwsh
+        run: |
+          $expectedOs = switch ("${{ matrix.platform }}") {
+            "windows" { "Windows" }
+            "linux" { "Linux" }
+            "macos" { "macOS" }
+          }
+          $expectedArch = if ("${{ matrix.arch }}" -eq "arm64") { "ARM64" } else { "X64" }
+          if ("${{ runner.os }}" -ne $expectedOs -or $env:RUNNER_ARCH -ne $expectedArch) {
+            throw "Runner identity does not match package metadata."
+          }
+
+      - name: Download Android build outputs
+        uses: actions/download-artifact@v4
+        with:
+          name: android-release
+          path: dist/android
+
+      - name: Build host executable and tests
+        shell: pwsh
+        run: |
+          ./scripts/build.ps1 -Configuration Release
+          cmake --build build --config Release
+
+      - name: Run host tests
+        shell: pwsh
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Create artifact package
+        shell: pwsh
+        run: |
+          ./scripts/package_artifacts.ps1 `
+            -Platform "${{ matrix.platform }}" `
+            -Arch "${{ matrix.arch }}"
+
+      - name: Upload artifact package
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/packages/${{ matrix.platform }}-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Attach packages to release
+    if: github.event_name == 'release'
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Upload packages to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: gh release upload "$RELEASE_TAG" release-assets/*.tar.gz --clobber

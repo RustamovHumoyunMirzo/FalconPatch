@@ -17,6 +17,70 @@ in this order:
 See [BUILD.md](BUILD.md) for tool discovery, selected ABIs, and direct CMake
 commands.
 
+## Prebuilt Artifact Packages
+
+Release and manual artifact runs produce these host packages:
+
+```text
+windows-x86_64.tar.gz  windows-arm64.tar.gz
+linux-x86_64.tar.gz    linux-arm64.tar.gz
+macos-x86_64.tar.gz    macos-arm64.tar.gz
+```
+
+Each package contains the matching `fpatch` executable, all four Android
+`libfalconpatch.so` ABIs, Java and Kotlin bootstrap DEX files, SDK headers,
+`falconpatch-artifacts.json`, and the project license. You can extract the
+executable and also pass the original archive directly to injection:
+
+```powershell
+tar -xzf downloads/windows-x86_64.tar.gz -C tools/falconpatch
+tools/falconpatch/host/fpatch.exe --version
+tools/falconpatch/host/fpatch.exe inject --source app.apk --lua-entry smoke.lua \
+  --artifacts downloads/windows-x86_64.tar.gz
+```
+
+This avoids a local C/C++, NDK, Java compiler, or Kotlin compiler build. APK
+signing still needs Android SDK build-tools and a JDK; use `--no-sign` only when
+another signing step will follow.
+
+The metadata declares the package platform/architecture and every file's
+resource kind, logical name, archive path, byte size, and SHA-256. `fpatch`
+selects runtime ABIs and the requested bootstrap from those declarations; it
+does not guess from filenames. It rejects unsafe archive paths, duplicate or
+undeclared files, unsupported schema/runtime API versions, size mismatches, and
+checksum mismatches. A checksum detects damage but does not prove who produced
+an archive, so use packages from a trusted release.
+
+The manifest contract starts like this; every packaged file has one entry:
+
+```json
+{
+  "schema_version": 1,
+  "runtime_api": 1,
+  "falconpatch_version": "1.0.0",
+  "package": "linux-arm64",
+  "host": { "platform": "linux", "arch": "arm64" },
+  "files": [
+    {
+      "kind": "runtime",
+      "name": "arm64-v8a",
+      "path": "android/runtime/arm64-v8a/libfalconpatch.so",
+      "size": 123456,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ]
+}
+```
+
+The all-zero checksum above is illustrative; generated manifests contain the
+actual digest.
+
+Validate a package without writing an APK:
+
+```powershell
+fpatch inject --source app.apk --artifacts linux-arm64.tar.gz --dry-run
+```
+
 ## Global Commands
 
 ```powershell
@@ -129,31 +193,8 @@ Lua files are not stored directly in APK assets. They are serialized into
 `assets/falconpatch/runtime.bin` using the bounded `FPB1` archive format and
 loaded from memory.
 
-The runtime opens base, package, coroutine, table, string, math, and UTF-8 Lua
-libraries. It removes `dofile`, `loadfile`, `package.loadlib`, filesystem search
-paths, and native searchers. FalconPatch APIs are modules, not globals, except
-for the small `fpatch` table and Lua's normal `require` function.
-
-### Lua API
-
-```lua
-local jni = require("jni")
-local gui = require("gui")
-local worker = require("background-worker")
-```
-
-| Function | Parameters | Result |
-| --- | --- | --- |
-| `fpatch.version()` | none | runtime version string |
-| `fpatch.log(priority, message)` | Android log priority integer, string | none |
-| `jni.package_name()` | none | package string or `nil` |
-| `jni.sdk_int()` | none | Android SDK integer or `nil` |
-| `jni.call_static_string(class, method)` | dotted Java class and no-arg static method | string, or `nil, error` |
-| `gui.toast(message)` | string | boolean queued status |
-| `worker.submit(source)` | Lua source string | boolean thread-start status |
-
-Background jobs run in a separate restricted Lua state. Pass source text rather
-than a closure because Lua states cannot safely share closures or stack values.
+See [lua-extensions.md](lua-extensions.md) for the restricted Lua environment,
+built-in modules, API table, and native Lua extension descriptor.
 
 ## JSON And YAML Profiles
 
@@ -171,6 +212,7 @@ override scalar profile values and append repeatable inputs.
 name: authorized-smoke-test
 source: app.apk
 output: build/app-fpatch.apk
+artifacts: packages/windows-x86_64.tar.gz
 native:
   arm64-v8a:
     - path: modules/arm64-v8a/libexample.so
@@ -198,7 +240,9 @@ signing:
   key_password: android
 ```
 
-Native input fields are `path`, optional `abi`, optional APK `name`, optional
+The optional `artifacts` path is resolved relative to the profile, just like the
+source and payload inputs. A CLI `--artifacts` value overrides it. Native input
+fields are `path`, optional `abi`, optional APK `name`, optional
 `init`, and optional Lua `module`. Lua fields are `path`, optional `module`, and
 `entry`.
 
@@ -226,8 +270,8 @@ fpatch inject --source app.apk --bootstrap-language java
 fpatch inject --source app.apk --bootstrap-language kotlin
 ```
 
-The selected DEX must have been embedded when `fpatch` was built. Kotlin is
-generated only when `kotlinc` is available.
+The selected DEX must exist in the supplied artifact package or have been
+embedded when `fpatch` was built.
 
 ## Runtime Library Name
 
@@ -311,8 +355,11 @@ embedded runtime ABI(s), and a new signing certificate when signing is enabled.
 
 Common failures:
 
-- `No embedded Android runtime`: run `build_android.ps1`, then rebuild `fpatch`.
-- `No embedded ... bootstrap DEX`: run `build_android.ps1 -BootstrapOnly`, then rebuild `fpatch`.
+- `No embedded Android runtime`: pass a release package with `--artifacts`, or
+  run `build_android.ps1` and rebuild `fpatch`.
+- `No embedded ... bootstrap DEX`: pass a release package with `--artifacts`,
+  or build that DEX and rebuild `fpatch`.
+- `Artifact file checksum does not match`: download the package again from a trusted release.
 - `zipalign/apksigner not found`: install Android SDK build-tools or set `ANDROID_SDK_ROOT`.
 - `keytool/Java not found`: install a JDK or use `--no-sign` and sign separately.
 - `Native ABI mismatch`: fix the profile ABI or supply the correct `.so`.
@@ -324,6 +371,7 @@ Common failures:
 fpatch inject \
   --source base.apk \
   --output build/base-fpatch.apk \
+  --artifacts downloads/linux-x86_64.tar.gz \
   --native modules/arm64-v8a/libexample.so \
   --native-module libexample.so=example \
   --lua scripts/helper.lua \
@@ -335,4 +383,4 @@ fpatch inject \
 
 ---
 
-[< Build](BUILD.md) | [Inspect details](inspect.md) | [Extension reference](inject.md)
+[< Build](BUILD.md) | [Inspect details](inspect.md) | [Native extensions](inject.md) | [Lua extensions](lua-extensions.md)
