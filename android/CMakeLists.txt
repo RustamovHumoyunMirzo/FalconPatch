@@ -18,7 +18,15 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(lua_source)
 
-set(LUA_SRC_DIR "${lua_source_SOURCE_DIR}/src")
+if(EXISTS "${lua_source_SOURCE_DIR}/src/lapi.c")
+    set(LUA_SRC_DIR "${lua_source_SOURCE_DIR}/src")
+elseif(EXISTS "${lua_source_SOURCE_DIR}/lapi.c")
+    set(LUA_SRC_DIR "${lua_source_SOURCE_DIR}")
+else()
+    message(FATAL_ERROR
+        "Lua source directory does not contain src/lapi.c or lapi.c: ${lua_source_SOURCE_DIR}"
+    )
+endif()
 set(LUA_SOURCES
     ${LUA_SRC_DIR}/lapi.c
     ${LUA_SRC_DIR}/lauxlib.c
