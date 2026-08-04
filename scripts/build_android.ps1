@@ -14,8 +14,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $androidRoot = Join-Path $repoRoot "android"
 $buildRoot = Join-Path $repoRoot "build/android"
 $distRoot = Join-Path $repoRoot "dist/android"
-$luaSourceCache = $null
-$luaIncludeDirectory = $null
+$luaIncludeDirectory = Join-Path $repoRoot "third_party/lua"
 
 function Resolve-AndroidSdk {
     $candidates = @($env:ANDROID_SDK_ROOT, $env:ANDROID_HOME)
@@ -177,9 +176,6 @@ foreach ($abi in $Abis) {
         "-DANDROID_PLATFORM=android-$Api",
         "-DCMAKE_BUILD_TYPE=$Configuration"
     )
-    if ($luaSourceCache) {
-        $configureArguments += "-DFETCHCONTENT_SOURCE_DIR_LUA_SOURCE=$luaSourceCache"
-    }
     & cmake @configureArguments
     if ($LASTEXITCODE -ne 0) {
         throw "Android configuration failed for $abi."
@@ -195,25 +191,14 @@ foreach ($abi in $Abis) {
     }
     Copy-Item -Force $library (Join-Path $abiDist "libfalconpatch.so")
     Write-Host "Built Android runtime for $abi"
-    if (-not $luaSourceCache) {
-        $luaIncludeDirectory = Get-ChildItem -Path $abiBuild -Recurse -Filter lua.h |
-            Where-Object { $_.Directory.Name -eq "src" } |
-            Select-Object -First 1 -ExpandProperty DirectoryName
-        if (-not $luaIncludeDirectory) {
-            throw "The downloaded Lua source directory was not found."
-        }
-        $luaSourceCache = Split-Path -Parent $luaIncludeDirectory
-    }
 }
 
 $sdkInclude = Join-Path $distRoot "sdk/include"
 New-Item -ItemType Directory -Force -Path $sdkInclude | Out-Null
 Copy-Item -Force (Join-Path $androidRoot "include/FalconPatch.h") $sdkInclude
-if ($luaIncludeDirectory) {
-    Copy-Item -Force (Join-Path $luaIncludeDirectory "lua.h") $sdkInclude
-    Copy-Item -Force (Join-Path $luaIncludeDirectory "luaconf.h") $sdkInclude
-    Copy-Item -Force (Join-Path $luaIncludeDirectory "lauxlib.h") $sdkInclude
-    Copy-Item -Force (Join-Path $luaIncludeDirectory "lualib.h") $sdkInclude
-}
+Copy-Item -Force (Join-Path $luaIncludeDirectory "lua.h") $sdkInclude
+Copy-Item -Force (Join-Path $luaIncludeDirectory "luaconf.h") $sdkInclude
+Copy-Item -Force (Join-Path $luaIncludeDirectory "lauxlib.h") $sdkInclude
+Copy-Item -Force (Join-Path $luaIncludeDirectory "lualib.h") $sdkInclude
 
 Write-Host "Android artifacts are ready under $distRoot"

@@ -7,25 +7,9 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-include(FetchContent)
-set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
-
-FetchContent_Declare(
-    lua_source
-    URL https://www.lua.org/ftp/lua-5.4.8.tar.gz
-    URL_HASH SHA256=4f18ddae154e793e46eeab727c59ef1c0c0c2b744e7b94219710d76f530629ae
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-)
-FetchContent_MakeAvailable(lua_source)
-
-if(EXISTS "${lua_source_SOURCE_DIR}/src/lapi.c")
-    set(LUA_SRC_DIR "${lua_source_SOURCE_DIR}/src")
-elseif(EXISTS "${lua_source_SOURCE_DIR}/lapi.c")
-    set(LUA_SRC_DIR "${lua_source_SOURCE_DIR}")
-else()
-    message(FATAL_ERROR
-        "Lua source directory does not contain src/lapi.c or lapi.c: ${lua_source_SOURCE_DIR}"
-    )
+set(LUA_SRC_DIR "${CMAKE_CURRENT_LIST_DIR}/../third_party/lua")
+if(NOT EXISTS "${LUA_SRC_DIR}/lapi.c" OR NOT EXISTS "${LUA_SRC_DIR}/lua.h")
+    message(FATAL_ERROR "Vendored Lua source is incomplete: ${LUA_SRC_DIR}")
 endif()
 set(LUA_SOURCES
     ${LUA_SRC_DIR}/lapi.c
@@ -66,7 +50,12 @@ add_library(fpatch_lua STATIC ${LUA_SOURCES})
 target_include_directories(fpatch_lua PUBLIC ${LUA_SRC_DIR})
 # Lua's POSIX mode requires fseeko/ftello, which Bionic exposes from API 24.
 # The API 21 runtime uses Lua's ANSI stdio fallback instead.
-target_compile_options(fpatch_lua PRIVATE -Wall -Wextra -Wno-unused-parameter)
+target_compile_options(fpatch_lua PRIVATE
+    $<$<C_COMPILER_ID:MSVC>:/W4>
+    $<$<NOT:$<C_COMPILER_ID:MSVC>>:-Wall>
+    $<$<NOT:$<C_COMPILER_ID:MSVC>>:-Wextra>
+    $<$<NOT:$<C_COMPILER_ID:MSVC>>:-Wno-unused-parameter>
+)
 
 add_library(falconpatch SHARED
     src/archive.c

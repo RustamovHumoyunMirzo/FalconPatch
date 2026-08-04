@@ -10,23 +10,29 @@ $testRoot = Join-Path ([IO.Path]::GetFullPath($WorkDirectory)) `
 $previousSdkRoot = $env:ANDROID_SDK_ROOT
 $previousAndroidHome = $env:ANDROID_HOME
 $previousLocalAppData = $env:LOCALAPPDATA
-$expectedLuaHash = "4f18ddae154e793e46eeab727c59ef1c0c0c2b744e7b94219710d76f530629ae"
 
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 try {
     $androidCmake = Get-Content -Raw (Join-Path $repoRoot "android/CMakeLists.txt")
     $androidBuildScript = Get-Content -Raw (Join-Path $repoRoot "scripts/build_android.ps1")
-    if ($androidCmake -notmatch "URL_HASH\s+SHA256=$expectedLuaHash") {
-        throw "Lua 5.4.8 does not use the verified upstream SHA-256."
+    $vendoredLuaHeader = Get-Content -Raw (Join-Path $repoRoot "third_party/lua/lua.h")
+    if ($androidCmake -match 'FetchContent|https?://') {
+        throw "The Android build must not download dependencies during CMake configuration."
     }
     if ($androidCmake -match 'target_compile_definitions\s*\(\s*fpatch_lua[^\)]*LUA_USE_POSIX') {
         throw "Lua POSIX mode requires Android API 24 and cannot be used by the API 21 runtime."
     }
-    if ($androidBuildScript -notmatch '\$luaSourceCache\s*=\s*Split-Path\s+-Parent\s+\$luaIncludeDirectory') {
-        throw "The cross-ABI Lua cache must point at the extracted source root."
+    if ($androidBuildScript -match 'FETCHCONTENT_SOURCE_DIR_LUA_SOURCE|luaSourceCache') {
+        throw "The Android build script still contains obsolete downloaded-Lua cache handling."
     }
-    if ($androidCmake -notmatch 'EXISTS\s+"\$\{lua_source_SOURCE_DIR\}/src/lapi\.c"') {
-        throw "The Android CMake project does not validate the Lua source layout."
+    if ($androidCmake -notmatch 'third_party/lua') {
+        throw "The Android CMake project does not use the vendored Lua source."
+    }
+    if ($vendoredLuaHeader -notmatch '#define\s+LUA_VERSION_MAJOR\s+"5"' -or
+        $vendoredLuaHeader -notmatch '#define\s+LUA_VERSION_MINOR\s+"4"' -or
+        $vendoredLuaHeader -notmatch '#define\s+LUA_VERSION_RELEASE\s+"8"' -or
+        $vendoredLuaHeader -notmatch 'Permission is hereby granted, free of charge') {
+        throw "The vendored Lua source is not the expected licensed Lua 5.4.8 release."
     }
 
     $env:ANDROID_SDK_ROOT = $testRoot

@@ -49,9 +49,9 @@ Only compile the Java/Kotlin bootstrap:
 ./scripts/build_android.ps1 -BootstrapOnly
 ```
 
-The Android CMake project downloads pinned Lua 5.4.8 source and verifies its
-SHA-256 checksum. Each ABI has its own object/build directory; later ABIs reuse
-only the downloaded source.
+The Android CMake project builds the vendored Lua 5.4.8 source under
+`third_party/lua`. It performs no dependency download during configuration.
+Each ABI has its own object/build directory and compiles the same pinned source.
 
 ## Host CLI
 
