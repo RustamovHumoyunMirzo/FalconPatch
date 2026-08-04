@@ -77,6 +77,9 @@ target_compile_definitions(yaml
         YAML_VERSION_PATCH=5
         YAML_VERSION_STRING="0.2.5"
 )
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(yaml PRIVATE _POSIX_C_SOURCE=200809L)
+endif()
 if(MSVC)
     target_compile_definitions(yaml PRIVATE _CRT_SECURE_NO_WARNINGS)
     target_compile_options(yaml PRIVATE /W0)
@@ -161,6 +164,9 @@ if(FPATCH_BUILD_TESTS)
     add_test(NAME artifact-bundle COMMAND fpatch_artifact_tests)
     find_program(FPATCH_PWSH_EXECUTABLE NAMES pwsh)
     if(FPATCH_PWSH_EXECUTABLE)
+        add_test(NAME host-cmake-flags
+            COMMAND "${FPATCH_PWSH_EXECUTABLE}" -NoProfile -File
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/host_cmake_tests.ps1")
         add_test(NAME android-script-paths
             COMMAND "${FPATCH_PWSH_EXECUTABLE}" -NoProfile -File
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_android_path_tests.ps1"
