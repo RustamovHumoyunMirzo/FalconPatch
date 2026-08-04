@@ -53,6 +53,9 @@ if(TARGET zlibstatic AND NOT TARGET ZLIB::ZLIB)
     add_library(ZLIB::ZLIB ALIAS zlibstatic)
 endif()
 FetchContent_MakeAvailable(libzip)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET zip)
+    target_compile_definitions(zip PRIVATE _GNU_SOURCE)
+endif()
 FetchContent_MakeAvailable(libyaml)
 
 add_library(yaml STATIC
