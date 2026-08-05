@@ -129,6 +129,10 @@ int fp_runtime_start(JNIEnv *env, jobject context) {
     }
     fp_lua_register_module("jni", fp_open_jni_module);
     fp_lua_register_module("gui", fp_open_gui_module);
+    fp_lua_register_module("ui", fp_open_ui_module);
+    fp_lua_register_module("events", fp_open_events_module);
+    fp_lua_register_module("intent", fp_open_intent_module);
+    fp_lua_register_module("app", fp_open_app_module);
     fp_lua_register_module("background-worker", fp_open_background_worker_module);
     if (!fp_load_native_modules()) {
         fp_log(ANDROID_LOG_ERROR, FPATCH_LOG_TAG, "One or more native modules failed to load.");

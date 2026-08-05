@@ -57,7 +57,7 @@ The manifest contract starts like this; every packaged file has one entry:
 {
   "schema_version": 1,
   "runtime_api": 1,
-  "falconpatch_version": "1.0.0",
+  "falconpatch_version": "1.5.0",
   "package": "linux-arm64",
   "host": { "platform": "linux", "arch": "arm64" },
   "files": [
@@ -91,7 +91,7 @@ fpatch -v
 ```
 
 With no arguments, `fpatch` prints the author/copyright notice and a help hint.
-`--version` and `-v` print `1.0.0`.
+`--version` and `-v` print `1.5.0`.
 
 ## Inspect An APK
 
@@ -194,8 +194,22 @@ Lua files are not stored directly in APK assets. They are serialized into
 loaded from memory.
 
 See the [extension index](extensions/README.md) for the restricted Lua
-environment and separate references for globals, JNI, GUI, background workers,
-pure Lua scripts, and native Lua modules.
+environment and separate references for globals, app state, JNI, UI overlays,
+events, intents, background workers, pure Lua scripts, and native Lua modules.
+
+For example, a startup script can show a diagnostic overlay in the current
+activity and drain lifecycle events captured by the bootstrap:
+
+```lua
+local app = require("app")
+local ui = require("ui")
+local events = require("events")
+
+ui.overlay("FalconPatch", app.package_name() or "unknown package")
+for _, event in ipairs(events.drain()) do
+    fpatch.log(4, event)
+end
+```
 
 ## JSON And YAML Profiles
 

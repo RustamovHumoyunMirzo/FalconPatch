@@ -1,10 +1,20 @@
 # GUI Module
 
-Load the module before using it:
+`gui` is kept as a compatibility alias for [`ui`](ui.md). Existing scripts can
+continue to load it:
 
 ```lua
 local gui = require("gui")
 ```
+
+New scripts should prefer:
+
+```lua
+local ui = require("ui")
+```
+
+The returned table currently exposes the same functions as `ui`, including
+`toast`, `overlay`, `clear_overlay`, `inflate_xml`, and `inspect`.
 
 ## `toast(message)`
 

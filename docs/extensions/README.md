@@ -14,18 +14,22 @@ shared table.
 ## Built-In Modules
 
 - [`jni`](jni.md): selected Android and Java access
-- [`gui`](gui.md): main-thread Android UI helpers
+- [`app`](app.md): package, SDK, foreground, and activity state
+- [`ui`](ui.md): toast, overlays, XML loading, and view inspection
+- [`gui`](gui.md): compatibility alias for `ui`
+- [`events`](events.md): lifecycle and custom event polling
+- [`intent`](intent.md): activity and broadcast intents
 - [`background-worker`](background-worker.md): restricted detached Lua jobs
 
 Imported APIs are available only after loading their module:
 
 ```lua
 local jni = require("jni")
-local gui = require("gui")
+local ui = require("ui")
 ```
 
 Only the small `fpatch` table is installed globally. FalconPatch does not add
-the `jni`, `gui`, or `background-worker` tables to the global namespace.
+imported module tables to the global namespace.
 
 ---
 

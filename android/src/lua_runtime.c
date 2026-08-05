@@ -55,7 +55,7 @@ static int lua_host_version(lua_State *state) {
 #ifdef FPATCH_ANDROID_VERSION
     lua_pushstring(state, FPATCH_ANDROID_VERSION);
 #else
-    lua_pushliteral(state, "1.0.0");
+    lua_pushliteral(state, "1.5.0");
 #endif
     return 1;
 }

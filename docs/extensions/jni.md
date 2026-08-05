@@ -46,6 +46,41 @@ end
 This function does not support arguments, instance methods, or other return
 types.
 
+## `class_exists(class_name)`
+
+Returns `true` when the class can be resolved.
+
+```lua
+if jni.class_exists("com.example.DebugInfo") then
+    fpatch.log(4, "debug class is available")
+end
+```
+
+## Static Fields
+
+Read selected static fields:
+
+| Function | Java signature |
+| --- | --- |
+| `get_static_string(class_name, field_name)` | `Ljava/lang/String;` |
+| `get_static_int(class_name, field_name)` | `I` |
+| `get_static_boolean(class_name, field_name)` | `Z` |
+
+Each returns `nil` when the class, field, JNI environment, or type signature is
+unavailable.
+
+## Static Methods
+
+Call selected no-argument static methods:
+
+| Function | Java signature |
+| --- | --- |
+| `call_static_string(class_name, method_name)` | `()Ljava/lang/String;` |
+| `call_static_int(class_name, method_name)` | `()I` |
+| `call_static_boolean(class_name, method_name)` | `()Z` |
+
+On failure, call helpers return `nil, error`.
+
 ---
 
 [< Extension index](README.md)

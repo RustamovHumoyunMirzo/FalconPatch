@@ -154,5 +154,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
+          GH_REPO: ${{ github.repository }}
         shell: bash
-        run: gh release upload "$RELEASE_TAG" release-assets/*.tar.gz --clobber
+        run: gh release upload "$RELEASE_TAG" release-assets/*.tar.gz --repo "$GH_REPO" --clobber

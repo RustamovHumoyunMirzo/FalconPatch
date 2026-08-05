@@ -73,7 +73,7 @@ static int write_bundle(const char *path, int valid_checksum) {
     metadata_size = snprintf(
         metadata, sizeof(metadata),
         "{\"schema_version\":1,\"runtime_api\":1,"
-        "\"falconpatch_version\":\"1.0.0\","
+        "\"falconpatch_version\":\"1.5.0\","
         "\"package\":\"windows-x86_64\","
         "\"host\":{\"platform\":\"windows\",\"arch\":\"x86_64\"},"
         "\"files\":["
