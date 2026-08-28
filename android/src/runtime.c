@@ -45,6 +45,32 @@ JNIEnv *fp_get_env(void) {
     return env;
 }
 
+jclass fp_runtime_bridge_class(JNIEnv *env) {
+    jclass local;
+
+    if (!env) {
+        return NULL;
+    }
+    if (g_fp_runtime.bridge_class) {
+        return (jclass)(*env)->NewLocalRef(env, g_fp_runtime.bridge_class);
+    }
+    local = (*env)->FindClass(env, "dev/falconpatch/runtime/RuntimeBridge");
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        return NULL;
+    }
+    if (!local) {
+        return NULL;
+    }
+    g_fp_runtime.bridge_class = (jclass)(*env)->NewGlobalRef(env, local);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env, local);
+        return NULL;
+    }
+    return local;
+}
+
 static int read_payload_asset(AAssetManager *manager, unsigned char **data, size_t *size) {
     AAsset *asset;
     off_t length;

@@ -14,7 +14,7 @@ static void clear_exception(JNIEnv *env) {
 }
 
 static jclass bridge_class(JNIEnv *env) {
-    return (*env)->FindClass(env, "dev/falconpatch/runtime/RuntimeBridge");
+    return fp_runtime_bridge_class(env);
 }
 
 static jstring make_string(JNIEnv *env, const char *value) {

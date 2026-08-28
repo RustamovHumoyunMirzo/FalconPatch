@@ -36,7 +36,7 @@ static int lua_package_name(lua_State *state) {
         lua_pushnil(state);
         return 1;
     }
-    bridge = (*env)->FindClass(env, "dev/falconpatch/runtime/RuntimeBridge");
+    bridge = fp_runtime_bridge_class(env);
     method = bridge
         ? (*env)->GetStaticMethodID(env, bridge, "packageName",
                                    "(Landroid/content/Context;)Ljava/lang/String;")
@@ -68,7 +68,7 @@ static int lua_current_activity(lua_State *state) {
         lua_pushnil(state);
         return 1;
     }
-    bridge = (*env)->FindClass(env, "dev/falconpatch/runtime/RuntimeBridge");
+    bridge = fp_runtime_bridge_class(env);
     method = bridge
         ? (*env)->GetStaticMethodID(env, bridge, "currentActivityName",
                                    "()Ljava/lang/String;")
@@ -98,7 +98,7 @@ static int lua_foreground(lua_State *state) {
         lua_pushboolean(state, 0);
         return 1;
     }
-    bridge = (*env)->FindClass(env, "dev/falconpatch/runtime/RuntimeBridge");
+    bridge = fp_runtime_bridge_class(env);
     method = bridge ? (*env)->GetStaticMethodID(env, bridge, "isForeground", "()Z") : NULL;
     if (method) {
         result = (*env)->CallStaticBooleanMethod(env, bridge, method);

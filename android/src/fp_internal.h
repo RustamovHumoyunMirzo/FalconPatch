@@ -42,6 +42,7 @@ typedef struct {
 
 typedef struct {
     JavaVM *vm;
+    jclass bridge_class;
     jobject context;
     AAssetManager *asset_manager;
     lua_State *lua;
@@ -65,6 +66,7 @@ void fp_archive_free(FpArchive *archive);
 void fp_log(int priority, const char *tag, const char *message);
 void fp_logf(int priority, const char *tag, const char *format, ...);
 JNIEnv *fp_get_env(void);
+jclass fp_runtime_bridge_class(JNIEnv *env);
 int fp_runtime_start(JNIEnv *env, jobject context);
 
 int fp_load_native_modules(void);

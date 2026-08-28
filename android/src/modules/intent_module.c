@@ -24,7 +24,7 @@ static int call_intent(lua_State *state, const char *method_name) {
         lua_pushboolean(state, 0);
         return 1;
     }
-    bridge = (*env)->FindClass(env, "dev/falconpatch/runtime/RuntimeBridge");
+    bridge = fp_runtime_bridge_class(env);
     method = bridge
         ? (*env)->GetStaticMethodID(env, bridge, method_name,
                                    "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z")

@@ -59,6 +59,8 @@ public final class RuntimeBridge {
     private static WeakReference<Activity> currentActivity =
             new WeakReference<Activity>(null);
     private static View overlayView;
+    private static String pendingOverlayTitle;
+    private static String pendingOverlayBody;
     private static int nextOverlayId = 1;
     private static int nextElementId = 100000;
     private static final Map<Integer, OverlayState> OVERLAYS =
@@ -136,48 +138,14 @@ public final class RuntimeBridge {
         }
         final Activity activity = currentActivity.get();
         if (activity == null) {
-            return false;
-        }
-        new Handler(Looper.getMainLooper()).post(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    clearOverlayOnMain();
-                    LinearLayout panel = new LinearLayout(activity);
-                    panel.setOrientation(LinearLayout.VERTICAL);
-                    panel.setPadding(dp(activity, 12), dp(activity, 10),
-                            dp(activity, 12), dp(activity, 10));
-                    panel.setBackgroundColor(0xdd20242a);
-
-                    TextView heading = new TextView(activity);
-                    heading.setText(title == null || title.length() == 0
-                            ? "FalconPatch" : title);
-                    heading.setTextColor(Color.WHITE);
-                    heading.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-                    heading.setGravity(Gravity.START);
-                    panel.addView(heading);
-
-                    if (body != null && body.length() > 0) {
-                        TextView detail = new TextView(activity);
-                        detail.setText(body);
-                        detail.setTextColor(0xffd9eefc);
-                        detail.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-                        panel.addView(detail);
-                    }
-
-                    FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.WRAP_CONTENT,
-                            Gravity.TOP);
-                    activity.addContentView(panel, params);
-                    overlayView = panel;
-                    pushEvent("ui:overlay:shown:" + activity.getClass().getName());
-                } catch (Throwable error) {
-                    Log.e(TAG, "Could not show overlay.", error);
-                    pushEvent("ui:overlay:error");
-                }
+            synchronized (RuntimeBridge.class) {
+                pendingOverlayTitle = title;
+                pendingOverlayBody = body;
             }
-        });
+            pushEvent("ui:overlay:queued");
+            return true;
+        }
+        showOverlayOnActivity(activity, title, body);
         return true;
     }
 
@@ -193,24 +161,17 @@ public final class RuntimeBridge {
 
     public static int createOverlay() {
         final Activity activity = currentActivity.get();
-        if (activity == null) {
-            return 0;
-        }
         final int id = nextOverlayId++;
+        final OverlayState state = new OverlayState(id);
+        OVERLAYS.put(id, state);
+        if (activity == null) {
+            pushEvent("ui:overlay:queued:" + id);
+            return id;
+        }
         return runOnMainSync(new MainIntTask() {
             @Override
             public int run() {
-                FrameLayout overlay = new FrameLayout(activity);
-                overlay.setBackgroundColor(Color.TRANSPARENT);
-                overlay.setClickable(false);
-                overlay.setClipChildren(false);
-                overlay.setClipToPadding(false);
-                FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        Gravity.TOP | Gravity.START);
-                activity.addContentView(overlay, params);
-                OVERLAYS.put(id, new OverlayState(id, overlay));
+                attachOverlayOnMain(activity, state);
                 pushEvent("ui:overlay:add:" + id);
                 return id;
             }
@@ -225,30 +186,29 @@ public final class RuntimeBridge {
                 if (overlay == null || key == null) {
                     return false;
                 }
-                ViewGroup.LayoutParams base = overlay.view.getLayoutParams();
-                FrameLayout.LayoutParams params = base instanceof FrameLayout.LayoutParams
-                        ? (FrameLayout.LayoutParams) base
-                        : new FrameLayout.LayoutParams(base);
                 if ("width".equals(key)) {
-                    params.width = layoutSize(value);
+                    overlay.width = value;
                 } else if ("height".equals(key)) {
-                    params.height = layoutSize(value);
+                    overlay.height = value;
                 } else if ("x".equals(key)) {
-                    params.leftMargin = dp(overlay.view.getContext(), value);
+                    overlay.x = value;
                 } else if ("y".equals(key)) {
-                    params.topMargin = dp(overlay.view.getContext(), value);
+                    overlay.y = value;
                 } else if ("gravity".equals(key)) {
-                    params.gravity = value;
+                    overlay.gravity = value;
                 } else if ("background".equals(key)) {
-                    overlay.view.setBackgroundColor(value);
+                    overlay.backgroundColor = value;
                 } else if ("alpha".equals(key)) {
-                    overlay.view.setAlpha(Math.max(0f, Math.min(1f, value / 100f)));
+                    overlay.alpha = Math.max(0f, Math.min(1f, value / 100f));
                 } else if ("visible".equals(key)) {
-                    overlay.view.setVisibility(value == 0 ? View.GONE : View.VISIBLE);
+                    overlay.visible = value != 0;
                 } else {
                     return false;
                 }
-                overlay.view.setLayoutParams(params);
+                if (overlay.view != null) {
+                    overlay.view.setLayoutParams(overlayParams(overlay.view.getContext(), overlay));
+                    applyOverlayVisuals(overlay);
+                }
                 return true;
             }
         });
@@ -573,7 +533,9 @@ public final class RuntimeBridge {
                 if (overlay == null) {
                     return false;
                 }
-                overlay.view.removeAllViews();
+                if (overlay.view != null) {
+                    overlay.view.removeAllViews();
+                }
                 removeElementsForOverlay(id);
                 pushEvent("ui:overlay:clear:" + id);
                 return true;
@@ -589,9 +551,11 @@ public final class RuntimeBridge {
                 if (overlay == null) {
                     return false;
                 }
-                ViewGroup parent = (ViewGroup) overlay.view.getParent();
-                if (parent != null) {
-                    parent.removeView(overlay.view);
+                if (overlay.view != null) {
+                    ViewGroup parent = (ViewGroup) overlay.view.getParent();
+                    if (parent != null) {
+                        parent.removeView(overlay.view);
+                    }
                 }
                 removeElementsForOverlay(id);
                 pushEvent("ui:overlay:remove:" + id);
@@ -739,12 +703,16 @@ public final class RuntimeBridge {
                     public void onActivityStarted(Activity activity) {
                         currentActivity = new WeakReference<Activity>(activity);
                         pushEvent("activity:started:" + activity.getClass().getName());
+                        attachPendingOverlays(activity);
+                        flushPendingOverlay(activity);
                     }
 
                     @Override
                     public void onActivityResumed(Activity activity) {
                         currentActivity = new WeakReference<Activity>(activity);
                         pushEvent("activity:resumed:" + activity.getClass().getName());
+                        attachPendingOverlays(activity);
+                        flushPendingOverlay(activity);
                     }
 
                     @Override
@@ -770,6 +738,103 @@ public final class RuntimeBridge {
                     }
                 });
         lifecycleRegistered = true;
+    }
+
+    private static void flushPendingOverlay(Activity activity) {
+        final String title;
+        final String body;
+        synchronized (RuntimeBridge.class) {
+            if (pendingOverlayTitle == null && pendingOverlayBody == null) {
+                return;
+            }
+            title = pendingOverlayTitle;
+            body = pendingOverlayBody;
+            pendingOverlayTitle = null;
+            pendingOverlayBody = null;
+        }
+        showOverlayOnActivity(activity, title, body);
+    }
+
+    private static void showOverlayOnActivity(final Activity activity, final String title,
+                                              final String body) {
+        new Handler(Looper.getMainLooper()).post(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    clearOverlayOnMain();
+                    LinearLayout panel = new LinearLayout(activity);
+                    panel.setOrientation(LinearLayout.VERTICAL);
+                    panel.setPadding(dp(activity, 12), dp(activity, 10),
+                            dp(activity, 12), dp(activity, 10));
+                    panel.setBackgroundColor(0xdd20242a);
+
+                    TextView heading = new TextView(activity);
+                    heading.setText(title == null || title.length() == 0
+                            ? "FalconPatch" : title);
+                    heading.setTextColor(Color.WHITE);
+                    heading.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+                    heading.setGravity(Gravity.START);
+                    panel.addView(heading);
+
+                    if (body != null && body.length() > 0) {
+                        TextView detail = new TextView(activity);
+                        detail.setText(body);
+                        detail.setTextColor(0xffd9eefc);
+                        detail.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+                        panel.addView(detail);
+                    }
+
+                    FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            Gravity.TOP);
+                    activity.addContentView(panel, params);
+                    overlayView = panel;
+                    pushEvent("ui:overlay:shown:" + activity.getClass().getName());
+                } catch (Throwable error) {
+                    Log.e(TAG, "Could not show overlay.", error);
+                    pushEvent("ui:overlay:error");
+                }
+            }
+        });
+    }
+
+    private static void attachPendingOverlays(Activity activity) {
+        for (OverlayState overlay : new ArrayList<OverlayState>(OVERLAYS.values())) {
+            if (overlay.view == null) {
+                attachOverlayOnMain(activity, overlay);
+                pushEvent("ui:overlay:add:" + overlay.id);
+            }
+        }
+    }
+
+    private static void attachOverlayOnMain(Activity activity, OverlayState state) {
+        FrameLayout overlay = new FrameLayout(activity);
+        overlay.setClickable(false);
+        overlay.setClipChildren(false);
+        overlay.setClipToPadding(false);
+        activity.addContentView(overlay, overlayParams(activity, state));
+        state.view = overlay;
+        applyOverlayVisuals(state);
+    }
+
+    private static FrameLayout.LayoutParams overlayParams(Context context, OverlayState state) {
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                layoutSize(state.width),
+                layoutSize(state.height),
+                state.gravity);
+        params.leftMargin = dp(context, state.x);
+        params.topMargin = dp(context, state.y);
+        return params;
+    }
+
+    private static void applyOverlayVisuals(OverlayState state) {
+        if (state.view == null) {
+            return;
+        }
+        state.view.setBackgroundColor(state.backgroundColor);
+        state.view.setAlpha(state.alpha);
+        state.view.setVisibility(state.visible ? View.VISIBLE : View.GONE);
     }
 
     private static void clearOverlayOnMain() {
@@ -862,7 +927,7 @@ public final class RuntimeBridge {
 
     private static ContainerTarget findContainer(int id) {
         OverlayState overlay = OVERLAYS.get(id);
-        if (overlay != null) {
+        if (overlay != null && overlay.view != null) {
             return new ContainerTarget(overlay.id, overlay.view);
         }
         ElementState element = ELEMENTS.get(id);
@@ -1052,11 +1117,18 @@ public final class RuntimeBridge {
 
     private static final class OverlayState {
         final int id;
-        final FrameLayout view;
+        FrameLayout view;
+        int width = ViewGroup.LayoutParams.MATCH_PARENT;
+        int height = ViewGroup.LayoutParams.WRAP_CONTENT;
+        int gravity = Gravity.TOP | Gravity.START;
+        int x;
+        int y;
+        int backgroundColor = Color.TRANSPARENT;
+        float alpha = 1f;
+        boolean visible = true;
 
-        OverlayState(int id, FrameLayout view) {
+        OverlayState(int id) {
             this.id = id;
-            this.view = view;
         }
     }
 

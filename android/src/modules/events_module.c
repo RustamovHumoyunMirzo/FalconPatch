@@ -36,7 +36,7 @@ static int lua_poll(lua_State *state) {
         lua_pushnil(state);
         return 1;
     }
-    bridge = (*env)->FindClass(env, "dev/falconpatch/runtime/RuntimeBridge");
+    bridge = fp_runtime_bridge_class(env);
     method = bridge
         ? (*env)->GetStaticMethodID(env, bridge, "pollEvent", "()Ljava/lang/String;")
         : NULL;
@@ -65,7 +65,7 @@ static int lua_drain(lua_State *state) {
     if (!env) {
         return 1;
     }
-    bridge = (*env)->FindClass(env, "dev/falconpatch/runtime/RuntimeBridge");
+    bridge = fp_runtime_bridge_class(env);
     method = bridge
         ? (*env)->GetStaticMethodID(env, bridge, "pollEvent", "()Ljava/lang/String;")
         : NULL;
@@ -96,7 +96,7 @@ static int lua_emit(lua_State *state) {
         lua_pushboolean(state, 0);
         return 1;
     }
-    bridge = (*env)->FindClass(env, "dev/falconpatch/runtime/RuntimeBridge");
+    bridge = fp_runtime_bridge_class(env);
     method = bridge
         ? (*env)->GetStaticMethodID(env, bridge, "emitEvent", "(Ljava/lang/String;)V")
         : NULL;
@@ -142,7 +142,7 @@ static int register_element_event(lua_State *state, const char *kind) {
         lua_pushboolean(state, 0);
         return 1;
     }
-    bridge = (*env)->FindClass(env, "dev/falconpatch/runtime/RuntimeBridge");
+    bridge = fp_runtime_bridge_class(env);
     method = bridge
         ? (*env)->GetStaticMethodID(env, bridge, "setElementEvent",
                                    "(ILjava/lang/String;Ljava/lang/String;)Z")

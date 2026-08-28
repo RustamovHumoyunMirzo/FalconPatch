@@ -44,6 +44,15 @@ function Resolve-Ndk([string]$SdkRoot) {
     if ($candidates) {
         return $candidates | Select-Object -First 1
     }
+    if ($IsWindows) {
+        $standalone = Get-ChildItem -Path "C:\" -Directory -Filter "android-ndk*" -ErrorAction SilentlyContinue |
+            Where-Object { Test-Path (Join-Path $_.FullName "build/cmake/android.toolchain.cmake") } |
+            Sort-Object Name -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+        if ($standalone) {
+            return $standalone
+        }
+    }
     $sideBySide = Get-LatestDirectory (Join-Path $SdkRoot "ndk")
     if ($sideBySide -and (Test-Path (Join-Path $sideBySide "build/cmake/android.toolchain.cmake"))) {
         return $sideBySide
