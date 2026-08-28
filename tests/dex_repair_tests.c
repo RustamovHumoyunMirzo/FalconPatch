@@ -39,7 +39,7 @@ static size_t put_uleb(unsigned char *data, size_t offset, uint32_t value) {
 
 static void make_dex(unsigned char *dex, size_t *size,
                      const char *method_name, const char *literal,
-                     int use_move) {
+                     int use_move, int runtime_owner) {
     const uint32_t string_ids_off = 112;
     const uint32_t type_ids_off = 128;
     const uint32_t proto_ids_off = 136;
@@ -70,7 +70,8 @@ static void make_dex(unsigned char *dex, size_t *size,
     write_u32(dex + 100, class_defs_off);
 
     system_string_off = (uint32_t)offset;
-    offset = put_string(dex, offset, "Ljava/lang/System;");
+    offset = put_string(dex, offset, runtime_owner ? "Ljava/lang/Runtime;" :
+                         "Ljava/lang/System;");
     method_name_off = (uint32_t)offset;
     offset = put_string(dex, offset, method_name);
     literal_off = (uint32_t)offset;
@@ -98,16 +99,21 @@ static void make_dex(unsigned char *dex, size_t *size,
     dex[class_data_off + 6] = 0xc8;
     dex[class_data_off + 7] = 0x01;
 
-    write_u16(dex + code_off, use_move ? 2 : 1);
+    write_u16(dex + code_off, (use_move || runtime_owner) ? 2 : 1);
     write_u16(dex + code_off + 4, 1);
     write_u32(dex + code_off + 12, use_move ? 6 : 5);
-    write_u16(dex + code_off + 16, use_move ? 0x011a : 0x001a);
+    write_u16(dex + code_off + 16,
+              (use_move || runtime_owner) ? 0x011a : 0x001a);
     write_u16(dex + code_off + 18, 2);
     if (use_move) {
         write_u16(dex + code_off + 20, 0x1007);
         write_u16(dex + code_off + 22, 0x0171);
         write_u16(dex + code_off + 24, 0);
         write_u16(dex + code_off + 26, 0);
+    } else if (runtime_owner) {
+        write_u16(dex + code_off + 20, 0x026e);
+        write_u16(dex + code_off + 22, 0);
+        write_u16(dex + code_off + 24, 0x0010);
     } else {
         write_u16(dex + code_off + 20, 0x0171);
         write_u16(dex + code_off + 22, 0);
@@ -118,7 +124,9 @@ static void make_dex(unsigned char *dex, size_t *size,
     *size = offset;
 }
 
-static void make_native_dex(unsigned char *dex, size_t *size) {
+static void make_native_dex(unsigned char *dex, size_t *size,
+                            const char *return_descriptor,
+                            uint16_t move_result_op) {
     const uint32_t string_ids_off = 112;
     const uint32_t type_ids_off = 136;
     const uint32_t proto_ids_off = 152;
@@ -156,7 +164,7 @@ static void make_native_dex(unsigned char *dex, size_t *size) {
     ping_off = (uint32_t)offset;
     offset = put_string(dex, offset, "ping");
     int_off = (uint32_t)offset;
-    offset = put_string(dex, offset, "I");
+    offset = put_string(dex, offset, return_descriptor);
     void_off = (uint32_t)offset;
     offset = put_string(dex, offset, "V");
     test_off = (uint32_t)offset;
@@ -211,7 +219,7 @@ static void make_native_dex(unsigned char *dex, size_t *size) {
     write_u16(dex + code_off + 16, 0x0071);
     write_u16(dex + code_off + 18, 0);
     write_u16(dex + code_off + 20, 0);
-    write_u16(dex + code_off + 22, 0x000a);
+    write_u16(dex + code_off + 22, move_result_op);
     write_u16(dex + code_off + 24, 0x000f);
 
     write_u32(dex + 32, (uint32_t)offset > string_data_off ? (uint32_t)offset : (uint32_t)string_data_off);
@@ -228,7 +236,7 @@ int main(void) {
     unsigned char dex[512];
     size_t size;
 
-    make_dex(dex, &size, "loadLibrary", "demo", 0);
+    make_dex(dex, &size, "loadLibrary", "demo", 0, 0);
     if (fpatch_repair_dex_load_calls(dex, size, "demo", "libdemo.so") != 1) {
         fprintf(stderr, "Expected one loadLibrary call to be repaired.\n");
         return 1;
@@ -242,7 +250,7 @@ int main(void) {
         fprintf(stderr, "DEX checksum was not refreshed.\n");
         return 1;
     }
-    make_dex(dex, &size, "load", "/data/local/tmp/libdemo.so", 1);
+    make_dex(dex, &size, "load", "/data/local/tmp/libdemo.so", 1, 0);
     if (fpatch_repair_dex_load_calls(dex, size, "demo", "libdemo.so") != 1) {
         fprintf(stderr, "Expected one moved System.load call to be repaired.\n");
         return 1;
@@ -252,10 +260,20 @@ int main(void) {
         fprintf(stderr, "Moved invoke instruction was not replaced by nops.\n");
         return 1;
     }
+    make_dex(dex, &size, "loadLibrary", "demo", 0, 1);
+    if (fpatch_repair_dex_load_calls(dex, size, "demo", "libdemo.so") != 1) {
+        fprintf(stderr, "Expected one Runtime.loadLibrary call to be repaired.\n");
+        return 1;
+    }
+    if (dex[220] != 0 || dex[221] != 0 || dex[222] != 0 ||
+        dex[223] != 0 || dex[224] != 0 || dex[225] != 0) {
+        fprintf(stderr, "Runtime invoke instruction was not replaced by nops.\n");
+        return 1;
+    }
     {
         const char *exports[] = { "Java_com_example_Bridge_ping" };
         size_t skipped = 0;
-        make_native_dex(dex, &size);
+        make_native_dex(dex, &size, "I", 0x000a);
         if (fpatch_repair_dex_jni_calls(dex, size, exports, 1, &skipped) != 1 ||
             skipped != 0) {
             fprintf(stderr, "Expected one static JNI call to be repaired.\n");
@@ -265,6 +283,38 @@ int main(void) {
             dex[291] != 0 || dex[292] != 0 || dex[293] != 0 ||
             dex[294] != 0x12 || dex[295] != 0) {
             fprintf(stderr, "JNI invoke or move-result was not safely repaired.\n");
+            return 1;
+        }
+    }
+    {
+        const char *strings[] = {
+            "RegisterNatives",
+            "com/example/Bridge",
+            "ping",
+            "()I"
+        };
+        size_t skipped = 0;
+        make_native_dex(dex, &size, "I", 0x000a);
+        if (fpatch_repair_dex_registered_jni_calls(dex, size, strings, 4,
+                                                   &skipped) != 1 ||
+            skipped != 0) {
+            fprintf(stderr, "Expected one registered JNI call to be repaired.\n");
+            return 1;
+        }
+    }
+    {
+        const char *exports[] = { "Java_com_example_Bridge_ping" };
+        size_t skipped = 0;
+        make_native_dex(dex, &size, "J", 0x000b);
+        if (fpatch_repair_dex_jni_calls(dex, size, exports, 1, &skipped) != 1 ||
+            skipped != 0) {
+            fprintf(stderr, "Expected one wide JNI call to be repaired.\n");
+            return 1;
+        }
+        if (dex[288] != 0x16 || dex[289] != 0 || dex[290] != 0 ||
+            dex[291] != 0 || dex[292] != 0 || dex[293] != 0 ||
+            dex[294] != 0 || dex[295] != 0) {
+            fprintf(stderr, "Wide JNI invoke was not repaired to const-wide zero.\n");
             return 1;
         }
     }

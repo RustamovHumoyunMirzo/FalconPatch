@@ -57,7 +57,7 @@ The manifest contract starts like this; every packaged file has one entry:
 {
   "schema_version": 1,
   "runtime_api": 1,
-  "falconpatch_version": "1.5.0",
+  "falconpatch_version": "1.7.2",
   "package": "linux-arm64",
   "host": { "platform": "linux", "arch": "arm64" },
   "files": [
@@ -91,7 +91,7 @@ fpatch -v
 ```
 
 With no arguments, `fpatch` prints the author/copyright notice and a help hint.
-`--version` and `-v` print `1.5.0`.
+`--version` and `-v` print `1.7.2`.
 
 ## Inspect An APK
 
@@ -237,10 +237,11 @@ fpatch detach --target app-fpatch.apk --so mylib --out app-detached.apk --sign \
   --ks-pass android --key-pass android
 ```
 
-`--smart-repair` patches literal `System.loadLibrary("mylib")`,
-`System.load(".../libmylib.so")`, and safe static-JNI callsites backed by
-exports in the removed `.so`. It replaces repaired invokes with same-size
-no-ops, writes safe default results where possible, and refreshes DEX checksums.
+`--smart-repair` patches literal `System.loadLibrary`, `System.load`,
+`Runtime.loadLibrary`, `Runtime.load`, static JNI exports, and registered-JNI
+calls when the removed `.so` contains matching class/method/signature evidence.
+It replaces repaired invokes with same-size no-ops, writes safe default results
+where possible, and refreshes DEX checksums.
 
 See [detach.md](detach.md) for ABI selection, signing details, FalconPatch
 runtime removal behavior, and smart-repair details.

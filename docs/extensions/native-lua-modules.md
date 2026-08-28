@@ -29,7 +29,7 @@ Load the registered module normally:
 local extension = require("myextension")
 ```
 
-The extension and runtime must use the same Lua ABI. FalconPatch 1.5.0 embeds
+The extension and runtime must use the same Lua ABI. FalconPatch embeds
 Lua 5.4.8 and ships matching headers. Link the extension against the
 FalconPatch runtime for every target ABI so Lua C API symbols resolve.
 

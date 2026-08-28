@@ -12,10 +12,14 @@
 #define FP_DEX_NO_INDEX 0xffffffffu
 #define FP_DEX_ACC_NATIVE 0x0100u
 #define FPATCH_MAX_JNI_EXPORTS 512
+#define FPATCH_MAX_NATIVE_STRINGS 1024
 
 typedef struct {
     char symbols[FPATCH_MAX_JNI_EXPORTS][384];
+    char strings[FPATCH_MAX_NATIVE_STRINGS][256];
     size_t count;
+    size_t string_count;
+    int has_register_natives;
 } FpatchJniExportSet;
 
 typedef struct {
@@ -168,16 +172,13 @@ static int jni_symbol_char(unsigned char value) {
 }
 
 static int jni_export_exists(const FpatchJniExportSet *exports,
-                             const char *symbol_prefix) {
-    size_t prefix_size = strlen(symbol_prefix);
+                             const char *symbol) {
     size_t i;
-    if (prefix_size == 0) {
+    if (!symbol || symbol[0] == '\0') {
         return 0;
     }
     for (i = 0; i < exports->count; i++) {
-        const char *symbol = exports->symbols[i];
-        if (strncmp(symbol, symbol_prefix, prefix_size) == 0 &&
-            (symbol[prefix_size] == '\0' || symbol[prefix_size] == '_')) {
+        if (strcmp(exports->symbols[i], symbol) == 0) {
             return 1;
         }
     }
@@ -201,13 +202,65 @@ static void add_jni_export(FpatchJniExportSet *exports, const char *symbol) {
     }
 }
 
+static int native_string_exists(const FpatchJniExportSet *exports,
+                                const char *value) {
+    size_t i;
+    if (!exports || !value || !value[0]) {
+        return 0;
+    }
+    for (i = 0; i < exports->string_count; i++) {
+        if (strcmp(exports->strings[i], value) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void add_native_string(FpatchJniExportSet *exports,
+                              const char *value) {
+    size_t length;
+    if (!exports || !value) {
+        return;
+    }
+    length = strlen(value);
+    if (length < 2 || length >= sizeof(exports->strings[0])) {
+        return;
+    }
+    if (strcmp(value, "RegisterNatives") == 0 ||
+        strcmp(value, "JNI RegisterNatives called with pending exception") == 0) {
+        exports->has_register_natives = 1;
+    }
+    if (exports->string_count < FPATCH_MAX_NATIVE_STRINGS &&
+        !native_string_exists(exports, value)) {
+        snprintf(exports->strings[exports->string_count],
+                 sizeof(exports->strings[exports->string_count]), "%s", value);
+        exports->string_count++;
+    }
+}
+
 static void collect_jni_exports(FpatchJniExportSet *exports,
                                 const unsigned char *data, size_t size) {
     size_t i = 0;
+    size_t printable_start = 0;
+    size_t printable_size = 0;
     while (i + 5 < size) {
         char symbol[384];
         size_t j = 0;
-        if (memcmp(data + i, "Java_", 5) != 0) {
+        if (data[i] >= 32 && data[i] <= 126) {
+            if (printable_size == 0) {
+                printable_start = i;
+            }
+            printable_size++;
+        } else {
+            if (printable_size >= 2 && printable_size < sizeof(exports->strings[0])) {
+                char value[256];
+                memcpy(value, data + printable_start, printable_size);
+                value[printable_size] = '\0';
+                add_native_string(exports, value);
+            }
+            printable_size = 0;
+        }
+        if (i + 5 > size || memcmp(data + i, "Java_", 5) != 0) {
             i++;
             continue;
         }
@@ -223,15 +276,21 @@ static void collect_jni_exports(FpatchJniExportSet *exports,
             i++;
         }
     }
+    if (printable_size >= 2 && printable_size < sizeof(exports->strings[0])) {
+        char value[256];
+        memcpy(value, data + printable_start, printable_size);
+        value[printable_size] = '\0';
+        add_native_string(exports, value);
+    }
 }
 
 static int jni_append_escaped(char *out, size_t out_size, size_t *used,
-                              const char *value, int class_name) {
+                              const char *value, int slash_as_separator) {
     size_t i;
     for (i = 0; value[i]; i++) {
         char chunk[8];
         char c = value[i];
-        if (class_name && (c == '/' || c == '.')) {
+        if (slash_as_separator && (c == '/' || c == '.')) {
             snprintf(chunk, sizeof(chunk), "_");
         } else if (c == '_') {
             snprintf(chunk, sizeof(chunk), "_1");
@@ -288,6 +347,21 @@ static uint32_t read_u32(const unsigned char *data) {
            ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24);
 }
 
+static int checked_range(uint32_t offset, uint32_t count,
+                         size_t item_size, size_t size) {
+    size_t start = (size_t)offset;
+    size_t total;
+    if (count == 0) {
+        return 1;
+    }
+    if (start > size ||
+        (item_size != 0u && (size_t)count > (SIZE_MAX / item_size))) {
+        return 0;
+    }
+    total = (size_t)count * item_size;
+    return total <= size - start;
+}
+
 static void write_u32(unsigned char *data, uint32_t value) {
     data[0] = (unsigned char)value;
     data[1] = (unsigned char)(value >> 8);
@@ -313,12 +387,22 @@ static void sha1_digest(const unsigned char *data, size_t size,
     uint32_t h2 = 0x98badcfeu;
     uint32_t h3 = 0x10325476u;
     uint32_t h4 = 0xc3d2e1f0u;
-    uint64_t bit_size = (uint64_t)size * 8u;
-    size_t padded_size = size + 1u + 8u;
+    uint64_t bit_size;
+    size_t padded_size;
     unsigned char *message;
     size_t offset;
 
+    if (size > (SIZE_MAX - 9u) || size > (UINT64_MAX / 8u)) {
+        memset(digest, 0, 20);
+        return;
+    }
+    bit_size = (uint64_t)size * 8u;
+    padded_size = size + 1u + 8u;
     while (padded_size % 64u != 0) {
+        if (padded_size == SIZE_MAX) {
+            memset(digest, 0, 20);
+            return;
+        }
         padded_size++;
     }
     message = (unsigned char *)calloc(padded_size, 1);
@@ -466,13 +550,15 @@ static int method_is_system_load(const unsigned char *data, size_t size,
                                  uint32_t method_ids_off,
                                  uint32_t method_ids_size,
                                  uint32_t method_index,
-                                 int *is_load_library) {
+                                 int *is_load_library,
+                                 int *string_arg_position) {
     uint16_t class_idx;
     uint32_t name_idx;
     char owner[128];
     char name[64];
 
     *is_load_library = 0;
+    *string_arg_position = 0;
     if (method_index >= method_ids_size ||
         method_ids_off + method_index * 8u + 8u > size) {
         return 0;
@@ -486,8 +572,12 @@ static int method_is_system_load(const unsigned char *data, size_t size,
                         name_idx, name, sizeof(name))) {
         return 0;
     }
-    if (strcmp(owner, "Ljava/lang/System;") != 0) {
+    if (strcmp(owner, "Ljava/lang/System;") != 0 &&
+        strcmp(owner, "Ljava/lang/Runtime;") != 0) {
         return 0;
+    }
+    if (strcmp(owner, "Ljava/lang/Runtime;") == 0) {
+        *string_arg_position = 1;
     }
     if (strcmp(name, "loadLibrary") == 0) {
         *is_load_library = 1;
@@ -545,6 +635,221 @@ static int get_dex_method_info(const unsigned char *data, size_t size,
                                    return_type, return_type_size);
 }
 
+static int get_dex_proto_signature(const unsigned char *data, size_t size,
+                                   uint32_t string_ids_off,
+                                   uint32_t string_ids_size,
+                                   uint32_t type_ids_off,
+                                   uint32_t type_ids_size,
+                                   uint32_t proto_ids_off,
+                                   uint32_t proto_ids_size,
+                                   uint16_t proto_idx,
+                                   char *out, size_t out_size) {
+    uint32_t return_type_idx;
+    uint32_t parameters_off;
+    uint32_t parameter_count = 0;
+    size_t used = 0;
+    uint32_t i;
+
+    if (!out_size || proto_idx >= proto_ids_size ||
+        proto_ids_off + (uint32_t)proto_idx * 12u + 12u > size) {
+        return 0;
+    }
+    out[0] = '\0';
+    return_type_idx = read_u32(data + proto_ids_off + (uint32_t)proto_idx * 12u + 4u);
+    parameters_off = read_u32(data + proto_ids_off + (uint32_t)proto_idx * 12u + 8u);
+    if (used + 2 >= out_size) {
+        return 0;
+    }
+    out[used++] = '(';
+    out[used] = '\0';
+    if (parameters_off) {
+        if (parameters_off > UINT32_MAX - 4u ||
+            !checked_range(parameters_off, 1, 4u, size)) {
+            return 0;
+        }
+        parameter_count = read_u32(data + parameters_off);
+        if (!checked_range(parameters_off + 4u, parameter_count, 2u, size)) {
+            return 0;
+        }
+    }
+    for (i = 0; i < parameter_count; i++) {
+        char type[128];
+        uint16_t type_idx = read_u16(data + parameters_off + 4u + i * 2u);
+        size_t length;
+        if (!get_dex_type_descriptor(data, size, string_ids_off, string_ids_size,
+                                     type_ids_off, type_ids_size, type_idx,
+                                     type, sizeof(type))) {
+            return 0;
+        }
+        length = strlen(type);
+        if (used + length + 2 >= out_size) {
+            return 0;
+        }
+        memcpy(out + used, type, length + 1);
+        used += length;
+    }
+    if (used + 2 >= out_size) {
+        return 0;
+    }
+    out[used++] = ')';
+    out[used] = '\0';
+    {
+        char return_type[128];
+        size_t length;
+        if (!get_dex_type_descriptor(data, size, string_ids_off, string_ids_size,
+                                     type_ids_off, type_ids_size, return_type_idx,
+                                     return_type, sizeof(return_type))) {
+            return 0;
+        }
+        length = strlen(return_type);
+        if (used + length + 1 >= out_size) {
+            return 0;
+        }
+        memcpy(out + used, return_type, length + 1);
+    }
+    return 1;
+}
+
+static int get_dex_proto_parameter_signature(const unsigned char *data, size_t size,
+                                             uint32_t string_ids_off,
+                                             uint32_t string_ids_size,
+                                             uint32_t type_ids_off,
+                                             uint32_t type_ids_size,
+                                             uint32_t proto_ids_off,
+                                             uint32_t proto_ids_size,
+                                             uint16_t proto_idx,
+                                             char *out, size_t out_size) {
+    char full[256];
+    const char *start;
+    const char *end;
+    size_t length;
+    if (!get_dex_proto_signature(data, size, string_ids_off, string_ids_size,
+                                 type_ids_off, type_ids_size,
+                                 proto_ids_off, proto_ids_size,
+                                 proto_idx, full, sizeof(full))) {
+        return 0;
+    }
+    start = strchr(full, '(');
+    end = strchr(full, ')');
+    if (!start || !end || end < start || !out_size) {
+        return 0;
+    }
+    start++;
+    length = (size_t)(end - start);
+    if (length >= out_size) {
+        return 0;
+    }
+    memcpy(out, start, length);
+    out[length] = '\0';
+    return 1;
+}
+
+static int owner_inner_name(const char *owner_descriptor,
+                            char *out, size_t out_size) {
+    size_t owner_size;
+    if (!owner_descriptor || owner_descriptor[0] != 'L' || !out_size) {
+        return 0;
+    }
+    owner_size = strlen(owner_descriptor);
+    if (owner_size < 3 || owner_descriptor[owner_size - 1] != ';' ||
+        owner_size - 2 >= out_size) {
+        return 0;
+    }
+    memcpy(out, owner_descriptor + 1, owner_size - 2);
+    out[owner_size - 2] = '\0';
+    return 1;
+}
+
+static int jni_long_symbol(const unsigned char *data, size_t size,
+                           uint32_t string_ids_off,
+                           uint32_t string_ids_size,
+                           uint32_t type_ids_off,
+                           uint32_t type_ids_size,
+                           uint32_t proto_ids_off,
+                           uint32_t proto_ids_size,
+                           uint16_t proto_idx,
+                           char *out, size_t out_size,
+                           const char *owner_descriptor,
+                           const char *method_name) {
+    char parameters[256];
+    size_t used;
+    if (!jni_short_symbol(out, out_size, owner_descriptor, method_name) ||
+        !get_dex_proto_parameter_signature(data, size,
+                                           string_ids_off, string_ids_size,
+                                           type_ids_off, type_ids_size,
+                                           proto_ids_off, proto_ids_size,
+                                           proto_idx, parameters,
+                                           sizeof(parameters))) {
+        return 0;
+    }
+    used = strlen(out);
+    if (used + 3 >= out_size) {
+        return 0;
+    }
+    out[used++] = '_';
+    out[used++] = '_';
+    out[used] = '\0';
+    return jni_append_escaped(out, out_size, &used, parameters, 1);
+}
+
+static void slash_to_dot(char *value) {
+    size_t i;
+    for (i = 0; value[i]; i++) {
+        if (value[i] == '/') {
+            value[i] = '.';
+        }
+    }
+}
+
+static int method_matches_register_natives(const unsigned char *data, size_t size,
+                                           uint32_t string_ids_off,
+                                           uint32_t string_ids_size,
+                                           uint32_t type_ids_off,
+                                           uint32_t type_ids_size,
+                                           uint32_t proto_ids_off,
+                                           uint32_t proto_ids_size,
+                                           uint32_t method_ids_off,
+                                           uint32_t method_ids_size,
+                                           uint32_t method_index,
+                                           const FpatchJniExportSet *exports) {
+    uint16_t class_idx;
+    uint16_t proto_idx;
+    uint32_t name_idx;
+    char owner[256];
+    char owner_inner[256];
+    char owner_dot[256];
+    char name[128];
+    char signature[256];
+
+    if (!exports || !exports->has_register_natives ||
+        method_index >= method_ids_size ||
+        method_ids_off + method_index * 8u + 8u > size) {
+        return 0;
+    }
+    class_idx = read_u16(data + method_ids_off + method_index * 8u);
+    proto_idx = read_u16(data + method_ids_off + method_index * 8u + 2u);
+    name_idx = read_u32(data + method_ids_off + method_index * 8u + 4u);
+    if (!get_dex_type_descriptor(data, size, string_ids_off, string_ids_size,
+                                 type_ids_off, type_ids_size, class_idx,
+                                 owner, sizeof(owner)) ||
+        !owner_inner_name(owner, owner_inner, sizeof(owner_inner)) ||
+        !get_dex_string(data, size, string_ids_off, string_ids_size,
+                        name_idx, name, sizeof(name)) ||
+        !get_dex_proto_signature(data, size, string_ids_off, string_ids_size,
+                                 type_ids_off, type_ids_size,
+                                 proto_ids_off, proto_ids_size,
+                                 proto_idx, signature, sizeof(signature))) {
+        return 0;
+    }
+    snprintf(owner_dot, sizeof(owner_dot), "%s", owner_inner);
+    slash_to_dot(owner_dot);
+    return native_string_exists(exports, name) &&
+           native_string_exists(exports, signature) &&
+           (native_string_exists(exports, owner) ||
+            native_string_exists(exports, owner_inner) ||
+            native_string_exists(exports, owner_dot));
+}
+
 static int method_matches_jni_export(const unsigned char *data, size_t size,
                                      uint32_t string_ids_off,
                                      uint32_t string_ids_size,
@@ -560,9 +865,16 @@ static int method_matches_jni_export(const unsigned char *data, size_t size,
     char name[128];
     char return_type[64];
     char symbol[384];
-    if (!exports || exports->count == 0) {
+    char long_symbol[384];
+    uint16_t proto_idx;
+    if (!exports || (exports->count == 0 && !exports->has_register_natives)) {
         return 0;
     }
+    if (method_index >= method_ids_size ||
+        method_ids_off + method_index * 8u + 4u > size) {
+        return 0;
+    }
+    proto_idx = read_u16(data + method_ids_off + method_index * 8u + 2u);
     if (!get_dex_method_info(data, size, string_ids_off, string_ids_size,
                              type_ids_off, type_ids_size,
                              proto_ids_off, proto_ids_size,
@@ -573,8 +885,21 @@ static int method_matches_jni_export(const unsigned char *data, size_t size,
         return 0;
     }
     (void)return_type;
-    return jni_short_symbol(symbol, sizeof(symbol), owner, name) &&
-           jni_export_exists(exports, symbol);
+    return ((jni_short_symbol(symbol, sizeof(symbol), owner, name) &&
+             jni_export_exists(exports, symbol)) ||
+            (jni_long_symbol(data, size,
+                             string_ids_off, string_ids_size,
+                             type_ids_off, type_ids_size,
+                             proto_ids_off, proto_ids_size,
+                             proto_idx, long_symbol, sizeof(long_symbol),
+                             owner, name) &&
+             jni_export_exists(exports, long_symbol))) ||
+           method_matches_register_natives(data, size,
+                                           string_ids_off, string_ids_size,
+                                           type_ids_off, type_ids_size,
+                                           proto_ids_off, proto_ids_size,
+                                           method_ids_off, method_ids_size,
+                                           method_index, exports);
 }
 
 static int dex_entry_name(const char *name) {
@@ -608,6 +933,38 @@ static int dex_load_literal_matches(const char *literal,
     }
     return strcmp(fpatch_path_basename(literal), library_name) == 0 ||
            ends_with_case(literal, library_name);
+}
+
+static int invoke_argument_register(const uint16_t *insns, size_t at,
+                                    unsigned int op, unsigned int arg_count,
+                                    unsigned int arg_position,
+                                    uint16_t *reg) {
+    if (arg_position >= arg_count) {
+        return 0;
+    }
+    if (op >= 0x74u && op <= 0x78u) {
+        *reg = (uint16_t)(insns[at + 2] + arg_position);
+        return 1;
+    }
+    switch (arg_position) {
+        case 0:
+            *reg = (uint16_t)(insns[at + 2] & 0x0fu);
+            return 1;
+        case 1:
+            *reg = (uint16_t)((insns[at + 2] >> 4) & 0x0fu);
+            return 1;
+        case 2:
+            *reg = (uint16_t)((insns[at + 2] >> 8) & 0x0fu);
+            return 1;
+        case 3:
+            *reg = (uint16_t)((insns[at + 2] >> 12) & 0x0fu);
+            return 1;
+        case 4:
+            *reg = (uint16_t)((insns[at] >> 8) & 0x0fu);
+            return 1;
+        default:
+            return 0;
+    }
 }
 
 static size_t dex_payload_width(const uint16_t *insns, size_t at, size_t count) {
@@ -736,10 +1093,17 @@ static int repair_native_invoke_result(uint16_t *insns, size_t at,
     if (next_op != 0x0au && next_op != 0x0bu && next_op != 0x0cu) {
         return 1;
     }
-    if (dex_return_is_wide(return_type) || next_op == 0x0bu) {
-        return 0;
-    }
     dest = (insns[at + width] >> 8) & 0xffu;
+    if (dex_return_is_wide(return_type) || next_op == 0x0bu) {
+        if (next_op != 0x0bu || dest > 255u) {
+            return 0;
+        }
+        insns[at] = (uint16_t)(0x0016u | (dest << 8));
+        insns[at + 1] = 0;
+        insns[at + 2] = 0;
+        insns[at + width] = 0;
+        return 2;
+    }
     if (dest > 15u) {
         return 0;
     }
@@ -856,21 +1220,22 @@ static size_t repair_dex_code_item(unsigned char *data, size_t size,
                                          registers_size)) {
             /* Register string state was propagated above. */
         } else {
-            if ((op == 0x71u || op == 0x77u) && width == 3) {
+            if (((op >= 0x6eu && op <= 0x72u) ||
+                 (op >= 0x74u && op <= 0x78u)) && width == 3) {
                 uint32_t method_index = insns[at + 1];
                 int is_load_library = 0;
+                int string_arg_position = 0;
                 uint16_t arg_register = 0;
                 unsigned int arg_count = (insns[at] >> 8) & 0xffu;
                 if (arg_count > 0 &&
                     method_is_system_load(data, size, string_ids_off, string_ids_size,
                                           type_ids_off, type_ids_size,
                                           method_ids_off, method_ids_size,
-                                          method_index, &is_load_library)) {
-                    if (op == 0x71u) {
-                        arg_register = (uint16_t)(insns[at + 2] & 0x0fu);
-                    } else {
-                        arg_register = insns[at + 2];
-                    }
+                                          method_index, &is_load_library,
+                                          &string_arg_position) &&
+                    invoke_argument_register(insns, at, op, arg_count,
+                                             (unsigned int)string_arg_position,
+                                             &arg_register)) {
                     if (arg_register < registers_size &&
                         register_strings[arg_register] != FP_DEX_NO_INDEX) {
                         char literal[512];
@@ -903,11 +1268,15 @@ static size_t repair_dex_code_item(unsigned char *data, size_t size,
                                                 method_ids_off, method_ids_size,
                                                 method_index, native_methods,
                                                 return_type, sizeof(return_type))) {
-                    if (repair_native_invoke_result(insns, at, width,
-                                                    insns_size, return_type)) {
+                    int repair_kind = repair_native_invoke_result(insns, at, width,
+                                                                  insns_size,
+                                                                  return_type);
+                    if (repair_kind) {
                         size_t i;
-                        for (i = 0; i < width; i++) {
-                            insns[at + i] = 0;
+                        if (repair_kind == 1) {
+                            for (i = 0; i < width; i++) {
+                                insns[at + i] = 0;
+                            }
                         }
                         repaired++;
                         if (stats) {
@@ -945,7 +1314,8 @@ static void mark_repairable_native_methods(const unsigned char *data, size_t siz
     uint32_t i;
     (void)proto_ids_off;
     (void)proto_ids_size;
-    if (!native_methods || !exports || exports->count == 0) {
+    if (!native_methods || !exports ||
+        (exports->count == 0 && !exports->has_register_natives)) {
         return;
     }
     for (i = 0; i < class_defs_size; i++) {
@@ -1032,12 +1402,15 @@ static FpatchDexRepairStats repair_dex(unsigned char *data, size_t size,
     method_ids_off = read_u32(data + 92);
     class_defs_size = read_u32(data + 96);
     class_defs_off = read_u32(data + 100);
-    if (class_defs_off + (size_t)class_defs_size * 32u > size ||
-        method_ids_off + (size_t)method_ids_size * 8u > size ||
-        proto_ids_off + (size_t)proto_ids_size * 12u > size) {
+    if (!checked_range(class_defs_off, class_defs_size, 32u, size) ||
+        !checked_range(method_ids_off, method_ids_size, 8u, size) ||
+        !checked_range(proto_ids_off, proto_ids_size, 12u, size) ||
+        !checked_range(string_ids_off, string_ids_size, 4u, size) ||
+        !checked_range(type_ids_off, type_ids_size, 4u, size)) {
         return stats;
     }
-    if (exports && exports->count > 0 && method_ids_size > 0) {
+    if (exports && method_ids_size > 0 &&
+        (exports->count > 0 || exports->has_register_natives)) {
         native_methods = (unsigned char *)calloc(method_ids_size, 1);
         if (native_methods) {
             mark_repairable_native_methods(data, size,
@@ -1122,6 +1495,25 @@ size_t fpatch_repair_dex_jni_calls(unsigned char *data, size_t size,
     memset(&exports, 0, sizeof(exports));
     for (i = 0; i < jni_export_count; i++) {
         add_jni_export(&exports, jni_exports[i]);
+    }
+    stats = repair_dex(data, size, "", "", &exports);
+    if (skipped_calls) {
+        *skipped_calls = stats.skipped_native_calls;
+    }
+    return stats.native_calls;
+}
+
+size_t fpatch_repair_dex_registered_jni_calls(unsigned char *data, size_t size,
+                                              const char * const *native_strings,
+                                              size_t native_string_count,
+                                              size_t *skipped_calls) {
+    FpatchJniExportSet exports;
+    FpatchDexRepairStats stats;
+    size_t i;
+    memset(&exports, 0, sizeof(exports));
+    exports.has_register_natives = 1;
+    for (i = 0; i < native_string_count; i++) {
+        add_native_string(&exports, native_strings[i]);
     }
     stats = repair_dex(data, size, "", "", &exports);
     if (skipped_calls) {
@@ -1335,6 +1727,7 @@ int fpatch_detach_apk(const FpatchDetachRequest *request,
         goto done;
     }
     result->jni_exports = jni_exports.count;
+    result->detected_registered_jni = jni_exports.has_register_natives;
     target = zip_open(raw, ZIP_CREATE | ZIP_TRUNCATE, &zip_error);
     if (!target) {
         snprintf(error, error_size, "Cannot create detached APK (zip error %d): %s",

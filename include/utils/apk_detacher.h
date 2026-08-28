@@ -30,6 +30,7 @@ typedef struct {
     size_t repaired_native_calls;
     size_t skipped_native_calls;
     size_t jni_exports;
+    int detected_registered_jni;
     int stripped_falconpatch_payload;
     int resigned;
 } FpatchDetachResult;
@@ -42,6 +43,10 @@ size_t fpatch_repair_dex_jni_calls(unsigned char *data, size_t size,
                                    const char * const *jni_exports,
                                    size_t jni_export_count,
                                    size_t *skipped_calls);
+size_t fpatch_repair_dex_registered_jni_calls(unsigned char *data, size_t size,
+                                              const char * const *native_strings,
+                                              size_t native_string_count,
+                                              size_t *skipped_calls);
 int fpatch_detach_apk(const FpatchDetachRequest *request,
                       FpatchDetachResult *result,
                       char *error, size_t error_size);

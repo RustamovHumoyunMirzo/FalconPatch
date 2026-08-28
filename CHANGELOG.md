@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.7.2 - 2026-08-28
+
+- Completed the 4/4 `detach --smart-repair` pass with `System.load`,
+  `System.loadLibrary`, `Runtime.load`, and `Runtime.loadLibrary` bytecode
+  repair.
+- Added static JNI callsite repair with exact short and long JNI symbol matching,
+  including overloaded `Java_...__signature` exports.
+- Added registered-JNI repair for removed libraries that expose
+  `RegisterNatives` class, method, and JNI signature strings.
+- Added safe native return synthesis for object, boolean, 32-bit primitive, and
+  wide `long`/`double` callsites while preserving method size.
+- Fixed repaired DEX header updates to use the required SHA-1 signature plus
+  Adler-32 checksum.
+- Hardened smart-repair DEX parsing with overflow-safe table and parameter-list
+  bounds checks to reduce malformed-APK crash risk.
+- Expanded smart-repair CLI reporting and tests for runtime loads, static JNI,
+  registered JNI, and wide native returns.
+
 ## 1.5.0 - 2026-08-06
 
 - Added release and manual artifact packages for prebuilt host/runtime/bootstrap bundles.

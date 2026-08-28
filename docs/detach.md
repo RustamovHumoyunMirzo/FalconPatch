@@ -138,18 +138,19 @@ remove those bootstrap references too.
 ## Smart Repair
 
 `--smart-repair` scans every `classes*.dex` entry and the removed `.so` files.
-It repairs literal `java.lang.System` native-load calls that point at the
-detached library:
+It repairs literal native-load calls that point at the detached library:
 
 ```powershell
 fpatch detach --target app-fpatch.apk --so demo --out app-detached.apk --smart-repair
 ```
 
-It handles both common forms:
+It handles the common direct load forms:
 
 ```java
 System.loadLibrary("demo");
 System.load("/data/local/tmp/libdemo.so");
+Runtime.getRuntime().loadLibrary("demo");
+Runtime.getRuntime().load("/data/local/tmp/libdemo.so");
 ```
 
 FalconPatch also scans the removed native libraries for static JNI exports such
@@ -160,13 +161,18 @@ Java_com_example_Bridge_ping
 Java_com_example_Bridge_ping__Ljava_lang_String_2
 ```
 
+It also recognizes many dynamic `RegisterNatives` libraries by matching native
+string evidence against the DEX declaration:
+
+- the owning class name, such as `com/example/Bridge`
+- the native method name, such as `ping`
+- the JNI prototype string, such as `()I` or `(Ljava/lang/String;)V`
+
 When a DEX declares a matching `native` method and Java/Kotlin code directly
-invokes that method, smart repair can remove the invoke too. For non-void
-object or 32-bit primitive returns, FalconPatch replaces the following
-`move-result` with a default `null`, `false`, or `0` value when that can be
-encoded without resizing the method. Void calls are simply no-oped. Calls that
-would require method resizing, wide-result synthesis, or deeper control-flow
-rewriting are counted as skipped and left unchanged.
+invokes that method, smart repair removes the invoke too. Void calls are
+no-oped. Object, boolean, and 32-bit primitive returns are replaced with
+default `null`, `false`, or `0` values. `long` and `double` calls followed by
+`move-result-wide` are rewritten to `const-wide/16 0` plus padding.
 
 The repair is intentionally size-preserving. FalconPatch replaces only the
 matching invoke instruction with the same number of Dalvik `nop` code units.
@@ -174,16 +180,17 @@ It does not delete instructions, change branch targets, resize methods, or move
 try/catch regions. After patching a DEX file it recomputes the DEX SHA-1
 signature and Adler-32 checksum.
 
-This makes the output verifier-friendly for direct literal load calls. Dynamic
-or indirect cases are reported as zero repaired calls and left unchanged,
-including:
+This makes the output verifier-friendly for direct literal load calls, static
+JNI exports, and most registered-JNI callsites that leave evidence in the
+native binary. Cases that still require app-specific analysis are reported as
+zero repaired or skipped calls and left unchanged:
 
 - library names built from variables or encrypted strings
 - reflection calls that eventually call `System.loadLibrary`
 - custom native loaders
-- `RegisterNatives` methods that do not expose static `Java_...` exports
-- wide native return values when the caller immediately consumes `long` or `double`
+- `RegisterNatives` tables with encrypted/packed names or signatures
 - framework wrappers that hide the actual load or JNI call target
+- callsites that need branch, try/catch, or method-size rewriting
 
 Run `inspect` before and after detach to see literal load calls that FalconPatch
 can identify:
@@ -208,6 +215,7 @@ FalconPatch detach complete
     lib/arm64-v8a/libdemo.so
   Smart repair load calls: 1
   Smart repair JNI exports: 4
+  Smart repair RegisterNatives: detected
   Smart repair native calls: 2
 ```
 
@@ -219,8 +227,8 @@ unchanged APK.
 - `detach requires --target, --so, and --out`: one of the required flags is missing.
 - `Output APK must not overwrite the target APK`: choose a different `--out`.
 - `No matching libdemo.so entry was found`: check the library name and ABI.
-- `Smart repair load calls: 0`: no literal `System.load` or `System.loadLibrary` call matched the detached library.
-- `Smart repair JNI exports: 0`: the removed `.so` did not expose static JNI symbols, or it uses dynamic registration.
+- `Smart repair load calls: 0`: no literal `System.load`, `System.loadLibrary`, `Runtime.load`, or `Runtime.loadLibrary` call matched the detached library.
+- `Smart repair JNI exports: 0`: the removed `.so` did not expose static JNI symbols. Registered JNI may still be detected separately.
 - `Smart repair skipped native calls`: FalconPatch found JNI callsites that need a wider rewrite than this size-preserving pass can safely perform.
 - `zipalign was not found`: install Android SDK build-tools or omit `--sign`.
 - `Java was not found`: install a JDK or omit `--sign`.

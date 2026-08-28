@@ -116,6 +116,8 @@ static void handle_detach(Command *cmd) {
     if (request.smart_repair) {
         printf("  Smart repair load calls: %zu\n", result.repaired_load_calls);
         printf("  Smart repair JNI exports: %zu\n", result.jni_exports);
+        printf("  Smart repair RegisterNatives: %s\n",
+               result.detected_registered_jni ? "detected" : "not detected");
         printf("  Smart repair native calls: %zu\n", result.repaired_native_calls);
         if (result.skipped_native_calls) {
             printf("  Smart repair skipped native calls: %zu\n",
