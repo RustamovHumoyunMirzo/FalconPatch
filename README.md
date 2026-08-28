@@ -32,6 +32,16 @@ fpatch inject --profile example_fp_profile.yaml
 fpatch inject --source app.apk --lua-entry smoke.lua --artifacts windows-x86_64.tar.gz
 ```
 
+### Detach native modules
+
+`detach` removes a named `.so` from all or selected APK ABI folders and can
+optionally sign the result.
+
+```powershell
+fpatch detach --target app-fpatch.apk --so mylib --out app-detached.apk
+fpatch detach --target app-fpatch.apk --so mylib --abi arm64-v8a --out app-detached.apk
+```
+
 ### Lua Scripting
 
 Lua entry scripts can use rich built-in Android modules for app state, view inspection, overlays, XML UI loading, event polling, and intents:
@@ -57,4 +67,4 @@ end
 
 ## Documentation
 
-You can get started with [build guide](docs/BUILD.md) or see the [full command tutorial](docs/COMMANDS.md), [native extension reference](docs/inject.md), and [extension references](docs/extensions/README.md).
+You can get started with [build guide](docs/BUILD.md) or see the [full command tutorial](docs/COMMANDS.md), [inspect guide](docs/inspect.md), [native extension reference](docs/inject.md), [detach guide](docs/detach.md), and [extension references](docs/extensions/README.md).

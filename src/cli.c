@@ -92,7 +92,6 @@ bool is_flag_dupe(Command *cmd, const char *flag_name) {
 static void print_banner(void) {
     puts("FalconPatch " FPATCH_VERSION);
     puts("Android testing and security instrumentation for authorized applications.");
-    puts("Author: Rustamov Humoyun Mirzo");
     puts("Copyright (c) 2026 Rustamov Humoyun Mirzo");
 }
 

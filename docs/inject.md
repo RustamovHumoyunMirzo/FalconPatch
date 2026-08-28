@@ -46,4 +46,4 @@ runtime are documented separately in the [extension index](extensions/README.md)
 
 ---
 
-[< Inspect Command](inspect.md) | [Extensions >](extensions/README.md)
+[< Inspect Command](inspect.md) | [Detach Command >](detach.md)

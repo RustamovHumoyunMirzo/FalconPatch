@@ -33,4 +33,4 @@ imported module tables to the global namespace.
 
 ---
 
-[< Inject Command](../inject.md)
+[< Detach Command](../detach.md)

@@ -211,6 +211,40 @@ for _, event in ipairs(events.drain()) do
 end
 ```
 
+## Detach A Native Library
+
+`detach` removes a named `.so` from an APK and strips old APK signature entries.
+The library selector accepts `mylib`, `libmylib`, `mylib.so`, or
+`libmylib.so`; all normalize to `libmylib.so`.
+
+```powershell
+fpatch detach --target app-fpatch.apk --so mylib --out app-detached.apk
+```
+
+By default every ABI is edited. To target only selected ABI folders:
+
+```powershell
+fpatch detach --target app-fpatch.apk --so mylib --abi arm64-v8a --out app-detached.apk
+fpatch detach --target app-fpatch.apk --so mylib -a --out app-detached.apk
+```
+
+Unsigned detach outputs do not require Android SDK signing tools. Add `--sign`
+to align, sign, and verify using the same keystore flags as `inject`:
+
+```powershell
+fpatch detach --target app-fpatch.apk --so mylib --out app-detached.apk --sign \
+  --keystore debug.keystore --ks-alias androiddebugkey \
+  --ks-pass android --key-pass android
+```
+
+`--smart-repair` is intentionally guarded for now. Removing DEX call sites like
+`System.loadLibrary("mylib")` safely requires bytecode rewriting and method
+control-flow repair; FalconPatch reports a clear error instead of producing an
+APK that is likely to crash.
+
+See [detach.md](detach.md) for ABI selection, signing details, FalconPatch
+runtime removal behavior, and smart-repair limitations.
+
 ## JSON And YAML Profiles
 
 Both formats use the same schema. Run either example without writing output:

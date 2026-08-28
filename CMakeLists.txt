@@ -176,6 +176,11 @@ if(FPATCH_BUILD_TESTS)
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/package_artifacts_tests.ps1"
                 -Fpatch "$<TARGET_FILE:fpatch>"
                 -WorkDirectory "${CMAKE_CURRENT_BINARY_DIR}")
+        add_test(NAME cli-detach
+            COMMAND "${FPATCH_PWSH_EXECUTABLE}" -NoProfile -File
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/detach_tests.ps1"
+                -Fpatch "$<TARGET_FILE:fpatch>"
+                -WorkDirectory "${CMAKE_CURRENT_BINARY_DIR}")
     endif()
     add_test(NAME cli-version COMMAND fpatch --version)
     add_test(NAME cli-inject-dry-run
