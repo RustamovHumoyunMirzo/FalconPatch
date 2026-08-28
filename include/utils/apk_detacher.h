@@ -27,6 +27,9 @@ typedef struct {
     char removed_entries[FPATCH_MAX_DETACH_ABIS][256];
     size_t removed_count;
     size_t repaired_load_calls;
+    size_t repaired_native_calls;
+    size_t skipped_native_calls;
+    size_t jni_exports;
     int stripped_falconpatch_payload;
     int resigned;
 } FpatchDetachResult;
@@ -35,6 +38,10 @@ void fpatch_detach_request_init(FpatchDetachRequest *request);
 size_t fpatch_repair_dex_load_calls(unsigned char *data, size_t size,
                                     const char *module_name,
                                     const char *library_name);
+size_t fpatch_repair_dex_jni_calls(unsigned char *data, size_t size,
+                                   const char * const *jni_exports,
+                                   size_t jni_export_count,
+                                   size_t *skipped_calls);
 int fpatch_detach_apk(const FpatchDetachRequest *request,
                       FpatchDetachResult *result,
                       char *error, size_t error_size);

@@ -18,7 +18,7 @@ static void print_detach_help(void) {
     puts("  --abi <abi|all>             ABI to target; repeatable. Default: all ABIs.");
     puts("  -a                          Target all ABIs.");
     puts("  --sign                      Align, sign, and verify the output APK.");
-    puts("  --smart-repair              NOP literal System.load/loadLibrary calls.");
+    puts("  --smart-repair              Repair literal load calls and safe JNI callsites.");
     puts("");
     puts("Signing:");
     puts("  --keystore <file>           Signing keystore; generated debug key by default.");
@@ -115,6 +115,12 @@ static void handle_detach(Command *cmd) {
     }
     if (request.smart_repair) {
         printf("  Smart repair load calls: %zu\n", result.repaired_load_calls);
+        printf("  Smart repair JNI exports: %zu\n", result.jni_exports);
+        printf("  Smart repair native calls: %zu\n", result.repaired_native_calls);
+        if (result.skipped_native_calls) {
+            printf("  Smart repair skipped native calls: %zu\n",
+                   result.skipped_native_calls);
+        }
     }
     if (result.stripped_falconpatch_payload) {
         puts("  Stripped FalconPatch payload: yes");

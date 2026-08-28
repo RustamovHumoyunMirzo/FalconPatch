@@ -1,15 +1,28 @@
 #include "utils/apk_detacher.h"
 #include "utils/apk_signer.h"
 #include "utils/file_utils.h"
-#include "utils/sha256.h"
 
 #include <ctype.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <zip.h>
 
 #define FP_DEX_NO_INDEX 0xffffffffu
+#define FP_DEX_ACC_NATIVE 0x0100u
+#define FPATCH_MAX_JNI_EXPORTS 512
+
+typedef struct {
+    char symbols[FPATCH_MAX_JNI_EXPORTS][384];
+    size_t count;
+} FpatchJniExportSet;
+
+typedef struct {
+    size_t load_calls;
+    size_t native_calls;
+    size_t skipped_native_calls;
+} FpatchDexRepairStats;
 
 static int ends_with_case(const char *value, const char *suffix) {
     size_t value_size = strlen(value);
@@ -150,6 +163,122 @@ static int copy_text(char *destination, size_t size, const char *value) {
     return 1;
 }
 
+static int jni_symbol_char(unsigned char value) {
+    return isalnum(value) || value == '_';
+}
+
+static int jni_export_exists(const FpatchJniExportSet *exports,
+                             const char *symbol_prefix) {
+    size_t prefix_size = strlen(symbol_prefix);
+    size_t i;
+    if (prefix_size == 0) {
+        return 0;
+    }
+    for (i = 0; i < exports->count; i++) {
+        const char *symbol = exports->symbols[i];
+        if (strncmp(symbol, symbol_prefix, prefix_size) == 0 &&
+            (symbol[prefix_size] == '\0' || symbol[prefix_size] == '_')) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void add_jni_export(FpatchJniExportSet *exports, const char *symbol) {
+    size_t i;
+    if (!symbol || strncmp(symbol, "Java_", 5) != 0) {
+        return;
+    }
+    for (i = 0; i < exports->count; i++) {
+        if (strcmp(exports->symbols[i], symbol) == 0) {
+            return;
+        }
+    }
+    if (exports->count < FPATCH_MAX_JNI_EXPORTS) {
+        snprintf(exports->symbols[exports->count],
+                 sizeof(exports->symbols[exports->count]), "%s", symbol);
+        exports->count++;
+    }
+}
+
+static void collect_jni_exports(FpatchJniExportSet *exports,
+                                const unsigned char *data, size_t size) {
+    size_t i = 0;
+    while (i + 5 < size) {
+        char symbol[384];
+        size_t j = 0;
+        if (memcmp(data + i, "Java_", 5) != 0) {
+            i++;
+            continue;
+        }
+        while (i < size && j + 1 < sizeof(symbol) &&
+               jni_symbol_char(data[i])) {
+            symbol[j++] = (char)data[i++];
+        }
+        symbol[j] = '\0';
+        if (j > 5) {
+            add_jni_export(exports, symbol);
+        }
+        if (j == 0) {
+            i++;
+        }
+    }
+}
+
+static int jni_append_escaped(char *out, size_t out_size, size_t *used,
+                              const char *value, int class_name) {
+    size_t i;
+    for (i = 0; value[i]; i++) {
+        char chunk[8];
+        char c = value[i];
+        if (class_name && (c == '/' || c == '.')) {
+            snprintf(chunk, sizeof(chunk), "_");
+        } else if (c == '_') {
+            snprintf(chunk, sizeof(chunk), "_1");
+        } else if (c == ';') {
+            snprintf(chunk, sizeof(chunk), "_2");
+        } else if (c == '[') {
+            snprintf(chunk, sizeof(chunk), "_3");
+        } else if (isalnum((unsigned char)c)) {
+            chunk[0] = c;
+            chunk[1] = '\0';
+        } else {
+            snprintf(chunk, sizeof(chunk), "_0%04x", (unsigned int)(unsigned char)c);
+        }
+        if (*used + strlen(chunk) + 1 >= out_size) {
+            return 0;
+        }
+        memcpy(out + *used, chunk, strlen(chunk) + 1);
+        *used += strlen(chunk);
+    }
+    return 1;
+}
+
+static int jni_short_symbol(char *out, size_t out_size,
+                            const char *owner_descriptor,
+                            const char *method_name) {
+    size_t used = 0;
+    size_t owner_size;
+    char owner[256];
+    if (!out_size || !owner_descriptor || !method_name ||
+        owner_descriptor[0] != 'L') {
+        return 0;
+    }
+    owner_size = strlen(owner_descriptor);
+    if (owner_size < 3 || owner_descriptor[owner_size - 1] != ';' ||
+        owner_size - 2 >= sizeof(owner)) {
+        return 0;
+    }
+    memcpy(owner, owner_descriptor + 1, owner_size - 2);
+    owner[owner_size - 2] = '\0';
+    snprintf(out, out_size, "Java_");
+    used = strlen(out);
+    return jni_append_escaped(out, out_size, &used, owner, 1) &&
+           used + 2 < out_size &&
+           (out[used++] = '_', out[used] = '\0',
+            jni_append_escaped(out, out_size, &used, method_name, 0));
+}
+
 static uint16_t read_u16(const unsigned char *data) {
     return (uint16_t)data[0] | (uint16_t)((uint16_t)data[1] << 8);
 }
@@ -164,6 +293,101 @@ static void write_u32(unsigned char *data, uint32_t value) {
     data[1] = (unsigned char)(value >> 8);
     data[2] = (unsigned char)(value >> 16);
     data[3] = (unsigned char)(value >> 24);
+}
+
+static uint32_t rol32(uint32_t value, unsigned int bits) {
+    return (value << bits) | (value >> (32u - bits));
+}
+
+static void write_be32(unsigned char *data, uint32_t value) {
+    data[0] = (unsigned char)(value >> 24);
+    data[1] = (unsigned char)(value >> 16);
+    data[2] = (unsigned char)(value >> 8);
+    data[3] = (unsigned char)value;
+}
+
+static void sha1_digest(const unsigned char *data, size_t size,
+                        unsigned char digest[20]) {
+    uint32_t h0 = 0x67452301u;
+    uint32_t h1 = 0xefcdab89u;
+    uint32_t h2 = 0x98badcfeu;
+    uint32_t h3 = 0x10325476u;
+    uint32_t h4 = 0xc3d2e1f0u;
+    uint64_t bit_size = (uint64_t)size * 8u;
+    size_t padded_size = size + 1u + 8u;
+    unsigned char *message;
+    size_t offset;
+
+    while (padded_size % 64u != 0) {
+        padded_size++;
+    }
+    message = (unsigned char *)calloc(padded_size, 1);
+    if (!message) {
+        memset(digest, 0, 20);
+        return;
+    }
+    memcpy(message, data, size);
+    message[size] = 0x80u;
+    for (offset = 0; offset < 8; offset++) {
+        message[padded_size - 1u - offset] = (unsigned char)(bit_size >> (offset * 8u));
+    }
+    for (offset = 0; offset < padded_size; offset += 64u) {
+        uint32_t w[80];
+        uint32_t a;
+        uint32_t b;
+        uint32_t c;
+        uint32_t d;
+        uint32_t e;
+        uint32_t i;
+        for (i = 0; i < 16; i++) {
+            const unsigned char *word = message + offset + i * 4u;
+            w[i] = ((uint32_t)word[0] << 24) | ((uint32_t)word[1] << 16) |
+                   ((uint32_t)word[2] << 8) | (uint32_t)word[3];
+        }
+        for (i = 16; i < 80; i++) {
+            w[i] = rol32(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+        }
+        a = h0;
+        b = h1;
+        c = h2;
+        d = h3;
+        e = h4;
+        for (i = 0; i < 80; i++) {
+            uint32_t f;
+            uint32_t k;
+            uint32_t temp;
+            if (i < 20) {
+                f = (b & c) | ((~b) & d);
+                k = 0x5a827999u;
+            } else if (i < 40) {
+                f = b ^ c ^ d;
+                k = 0x6ed9eba1u;
+            } else if (i < 60) {
+                f = (b & c) | (b & d) | (c & d);
+                k = 0x8f1bbcdcu;
+            } else {
+                f = b ^ c ^ d;
+                k = 0xca62c1d6u;
+            }
+            temp = rol32(a, 5) + f + e + k + w[i];
+            e = d;
+            d = c;
+            c = rol32(b, 30);
+            b = a;
+            a = temp;
+        }
+        h0 += a;
+        h1 += b;
+        h2 += c;
+        h3 += d;
+        h4 += e;
+    }
+    free(message);
+    write_be32(digest, h0);
+    write_be32(digest + 4, h1);
+    write_be32(digest + 8, h2);
+    write_be32(digest + 12, h3);
+    write_be32(digest + 16, h4);
 }
 
 static int read_uleb128(const unsigned char *data, size_t size,
@@ -270,6 +494,87 @@ static int method_is_system_load(const unsigned char *data, size_t size,
         return 1;
     }
     return strcmp(name, "load") == 0;
+}
+
+static int get_dex_method_info(const unsigned char *data, size_t size,
+                               uint32_t string_ids_off,
+                               uint32_t string_ids_size,
+                               uint32_t type_ids_off,
+                               uint32_t type_ids_size,
+                               uint32_t proto_ids_off,
+                               uint32_t proto_ids_size,
+                               uint32_t method_ids_off,
+                               uint32_t method_ids_size,
+                               uint32_t method_index,
+                               char *owner, size_t owner_size,
+                               char *name, size_t name_size,
+                               char *return_type, size_t return_type_size) {
+    uint16_t class_idx;
+    uint16_t proto_idx;
+    uint32_t name_idx;
+    uint32_t return_type_idx;
+
+    if (owner_size) {
+        owner[0] = '\0';
+    }
+    if (name_size) {
+        name[0] = '\0';
+    }
+    if (return_type_size) {
+        return_type[0] = '\0';
+    }
+    if (method_index >= method_ids_size ||
+        method_ids_off + method_index * 8u + 8u > size) {
+        return 0;
+    }
+    class_idx = read_u16(data + method_ids_off + method_index * 8u);
+    proto_idx = read_u16(data + method_ids_off + method_index * 8u + 2u);
+    name_idx = read_u32(data + method_ids_off + method_index * 8u + 4u);
+    if (proto_idx >= proto_ids_size ||
+        proto_ids_off + (uint32_t)proto_idx * 12u + 8u > size) {
+        return 0;
+    }
+    return_type_idx = read_u32(data + proto_ids_off + (uint32_t)proto_idx * 12u + 4u);
+    return get_dex_type_descriptor(data, size, string_ids_off, string_ids_size,
+                                   type_ids_off, type_ids_size, class_idx,
+                                   owner, owner_size) &&
+           get_dex_string(data, size, string_ids_off, string_ids_size,
+                          name_idx, name, name_size) &&
+           get_dex_type_descriptor(data, size, string_ids_off, string_ids_size,
+                                   type_ids_off, type_ids_size, return_type_idx,
+                                   return_type, return_type_size);
+}
+
+static int method_matches_jni_export(const unsigned char *data, size_t size,
+                                     uint32_t string_ids_off,
+                                     uint32_t string_ids_size,
+                                     uint32_t type_ids_off,
+                                     uint32_t type_ids_size,
+                                     uint32_t proto_ids_off,
+                                     uint32_t proto_ids_size,
+                                     uint32_t method_ids_off,
+                                     uint32_t method_ids_size,
+                                     uint32_t method_index,
+                                     const FpatchJniExportSet *exports) {
+    char owner[256];
+    char name[128];
+    char return_type[64];
+    char symbol[384];
+    if (!exports || exports->count == 0) {
+        return 0;
+    }
+    if (!get_dex_method_info(data, size, string_ids_off, string_ids_size,
+                             type_ids_off, type_ids_size,
+                             proto_ids_off, proto_ids_size,
+                             method_ids_off, method_ids_size,
+                             method_index, owner, sizeof(owner),
+                             name, sizeof(name),
+                             return_type, sizeof(return_type))) {
+        return 0;
+    }
+    (void)return_type;
+    return jni_short_symbol(symbol, sizeof(symbol), owner, name) &&
+           jni_export_exists(exports, symbol);
 }
 
 static int dex_entry_name(const char *name) {
@@ -406,8 +711,73 @@ static int propagate_move_string(const uint16_t *insns, size_t at,
     return 1;
 }
 
+static int dex_return_is_wide(const char *return_type) {
+    return return_type && (strcmp(return_type, "J") == 0 ||
+                           strcmp(return_type, "D") == 0);
+}
+
+static int dex_return_is_void(const char *return_type) {
+    return return_type && strcmp(return_type, "V") == 0;
+}
+
+static int repair_native_invoke_result(uint16_t *insns, size_t at,
+                                       size_t width, size_t count,
+                                       const char *return_type) {
+    unsigned int next_op;
+    unsigned int dest;
+
+    if (dex_return_is_void(return_type)) {
+        return 1;
+    }
+    if (at + width >= count) {
+        return 1;
+    }
+    next_op = insns[at + width] & 0xffu;
+    if (next_op != 0x0au && next_op != 0x0bu && next_op != 0x0cu) {
+        return 1;
+    }
+    if (dex_return_is_wide(return_type) || next_op == 0x0bu) {
+        return 0;
+    }
+    dest = (insns[at + width] >> 8) & 0xffu;
+    if (dest > 15u) {
+        return 0;
+    }
+    insns[at + width] = (uint16_t)(0x0012u | (dest << 8));
+    return 1;
+}
+
+static int method_is_repairable_native(const unsigned char *data, size_t size,
+                                       uint32_t string_ids_off,
+                                       uint32_t string_ids_size,
+                                       uint32_t type_ids_off,
+                                       uint32_t type_ids_size,
+                                       uint32_t proto_ids_off,
+                                       uint32_t proto_ids_size,
+                                       uint32_t method_ids_off,
+                                       uint32_t method_ids_size,
+                                       uint32_t method_index,
+                                       const unsigned char *native_methods,
+                                       char *return_type,
+                                       size_t return_type_size) {
+    char owner[256];
+    char name[128];
+
+    if (!native_methods || method_index >= method_ids_size ||
+        !native_methods[method_index]) {
+        return 0;
+    }
+    return get_dex_method_info(data, size, string_ids_off, string_ids_size,
+                               type_ids_off, type_ids_size,
+                               proto_ids_off, proto_ids_size,
+                               method_ids_off, method_ids_size,
+                               method_index, owner, sizeof(owner),
+                               name, sizeof(name),
+                               return_type, return_type_size);
+}
+
 static void dex_fix_header(unsigned char *data, size_t size) {
-    unsigned char digest[32];
+    unsigned char digest[20];
     uint32_t a = 1;
     uint32_t b = 0;
     size_t i;
@@ -416,7 +786,7 @@ static void dex_fix_header(unsigned char *data, size_t size) {
         return;
     }
     memset(data + 8, 0, 24);
-    fpatch_sha256(data + 32, size - 32, digest);
+    sha1_digest(data + 32, size - 32, digest);
     memcpy(data + 12, digest, 20);
     for (i = 12; i < size; i++) {
         a = (a + data[i]) % 65521u;
@@ -431,10 +801,14 @@ static size_t repair_dex_code_item(unsigned char *data, size_t size,
                                    uint32_t string_ids_size,
                                    uint32_t type_ids_off,
                                    uint32_t type_ids_size,
+                                   uint32_t proto_ids_off,
+                                   uint32_t proto_ids_size,
                                    uint32_t method_ids_off,
                                    uint32_t method_ids_size,
                                    const char *module_name,
-                                   const char *library_name) {
+                                   const char *library_name,
+                                   const unsigned char *native_methods,
+                                   FpatchDexRepairStats *stats) {
     uint16_t registers_size;
     uint32_t insns_size;
     uint16_t *insns;
@@ -511,7 +885,36 @@ static size_t repair_dex_code_item(unsigned char *data, size_t size,
                                 insns[at + i] = 0;
                             }
                             repaired++;
+                            if (stats) {
+                                stats->load_calls++;
+                            }
                         }
+                    }
+                }
+            }
+            if (((op >= 0x6eu && op <= 0x72u) ||
+                 (op >= 0x74u && op <= 0x78u)) && width == 3) {
+                uint32_t method_index = insns[at + 1];
+                char return_type[64];
+                if (method_is_repairable_native(data, size,
+                                                string_ids_off, string_ids_size,
+                                                type_ids_off, type_ids_size,
+                                                proto_ids_off, proto_ids_size,
+                                                method_ids_off, method_ids_size,
+                                                method_index, native_methods,
+                                                return_type, sizeof(return_type))) {
+                    if (repair_native_invoke_result(insns, at, width,
+                                                    insns_size, return_type)) {
+                        size_t i;
+                        for (i = 0; i < width; i++) {
+                            insns[at + i] = 0;
+                        }
+                        repaired++;
+                        if (stats) {
+                            stats->native_calls++;
+                        }
+                    } else if (stats) {
+                        stats->skipped_native_calls++;
                     }
                 }
             }
@@ -526,33 +929,125 @@ static size_t repair_dex_code_item(unsigned char *data, size_t size,
     return repaired;
 }
 
-size_t fpatch_repair_dex_load_calls(unsigned char *data, size_t size,
-                                    const char *module_name,
-                                    const char *library_name) {
+static void mark_repairable_native_methods(const unsigned char *data, size_t size,
+                                           uint32_t string_ids_off,
+                                           uint32_t string_ids_size,
+                                           uint32_t type_ids_off,
+                                           uint32_t type_ids_size,
+                                           uint32_t proto_ids_off,
+                                           uint32_t proto_ids_size,
+                                           uint32_t method_ids_off,
+                                           uint32_t method_ids_size,
+                                           uint32_t class_defs_off,
+                                           uint32_t class_defs_size,
+                                           const FpatchJniExportSet *exports,
+                                           unsigned char *native_methods) {
+    uint32_t i;
+    (void)proto_ids_off;
+    (void)proto_ids_size;
+    if (!native_methods || !exports || exports->count == 0) {
+        return;
+    }
+    for (i = 0; i < class_defs_size; i++) {
+        uint32_t class_data_off = read_u32(data + class_defs_off + i * 32u + 24u);
+        size_t offset = class_data_off;
+        uint32_t static_fields;
+        uint32_t instance_fields;
+        uint32_t direct_methods;
+        uint32_t virtual_methods;
+        uint32_t ignored;
+        uint32_t method_index = 0;
+        uint32_t item;
+        if (class_data_off == 0 || class_data_off >= size ||
+            !read_uleb128(data, size, &offset, &static_fields) ||
+            !read_uleb128(data, size, &offset, &instance_fields) ||
+            !read_uleb128(data, size, &offset, &direct_methods) ||
+            !read_uleb128(data, size, &offset, &virtual_methods)) {
+            continue;
+        }
+        for (item = 0; item < static_fields + instance_fields; item++) {
+            if (!read_uleb128(data, size, &offset, &ignored) ||
+                !read_uleb128(data, size, &offset, &ignored)) {
+                break;
+            }
+        }
+        if (item != static_fields + instance_fields) {
+            continue;
+        }
+        for (item = 0; item < direct_methods + virtual_methods; item++) {
+            uint32_t method_idx_diff;
+            uint32_t access_flags;
+            uint32_t code_off;
+            if (!read_uleb128(data, size, &offset, &method_idx_diff) ||
+                !read_uleb128(data, size, &offset, &access_flags) ||
+                !read_uleb128(data, size, &offset, &code_off)) {
+                break;
+            }
+            (void)code_off;
+            method_index += method_idx_diff;
+            if (method_index < method_ids_size &&
+                (access_flags & FP_DEX_ACC_NATIVE) &&
+                method_matches_jni_export(data, size,
+                                          string_ids_off, string_ids_size,
+                                          type_ids_off, type_ids_size,
+                                          proto_ids_off, proto_ids_size,
+                                          method_ids_off, method_ids_size,
+                                          method_index, exports)) {
+                native_methods[method_index] = 1;
+            }
+        }
+    }
+}
+
+static FpatchDexRepairStats repair_dex(unsigned char *data, size_t size,
+                                       const char *module_name,
+                                       const char *library_name,
+                                       const FpatchJniExportSet *exports) {
     uint32_t string_ids_size;
     uint32_t string_ids_off;
     uint32_t type_ids_size;
     uint32_t type_ids_off;
+    uint32_t proto_ids_size;
+    uint32_t proto_ids_off;
     uint32_t method_ids_size;
     uint32_t method_ids_off;
     uint32_t class_defs_size;
     uint32_t class_defs_off;
+    unsigned char *native_methods = NULL;
+    FpatchDexRepairStats stats;
     size_t repaired = 0;
     uint32_t i;
 
+    memset(&stats, 0, sizeof(stats));
     if (size < 112 || memcmp(data, "dex\n", 4) != 0) {
-        return 0;
+        return stats;
     }
     string_ids_size = read_u32(data + 56);
     string_ids_off = read_u32(data + 60);
     type_ids_size = read_u32(data + 64);
     type_ids_off = read_u32(data + 68);
+    proto_ids_size = read_u32(data + 72);
+    proto_ids_off = read_u32(data + 76);
     method_ids_size = read_u32(data + 88);
     method_ids_off = read_u32(data + 92);
     class_defs_size = read_u32(data + 96);
     class_defs_off = read_u32(data + 100);
-    if (class_defs_off + (size_t)class_defs_size * 32u > size) {
-        return 0;
+    if (class_defs_off + (size_t)class_defs_size * 32u > size ||
+        method_ids_off + (size_t)method_ids_size * 8u > size ||
+        proto_ids_off + (size_t)proto_ids_size * 12u > size) {
+        return stats;
+    }
+    if (exports && exports->count > 0 && method_ids_size > 0) {
+        native_methods = (unsigned char *)calloc(method_ids_size, 1);
+        if (native_methods) {
+            mark_repairable_native_methods(data, size,
+                                           string_ids_off, string_ids_size,
+                                           type_ids_off, type_ids_size,
+                                           proto_ids_off, proto_ids_size,
+                                           method_ids_off, method_ids_size,
+                                           class_defs_off, class_defs_size,
+                                           exports, native_methods);
+        }
     }
     for (i = 0; i < class_defs_size; i++) {
         uint32_t class_data_off = read_u32(data + class_defs_off + i * 32u + 24u);
@@ -595,15 +1090,44 @@ size_t fpatch_repair_dex_load_calls(unsigned char *data, size_t size,
                 repaired += repair_dex_code_item(data, size, code_off,
                                                  string_ids_off, string_ids_size,
                                                  type_ids_off, type_ids_size,
+                                                 proto_ids_off, proto_ids_size,
                                                  method_ids_off, method_ids_size,
-                                                 module_name, library_name);
+                                                 module_name, library_name,
+                                                 native_methods, &stats);
             }
         }
     }
     if (repaired) {
         dex_fix_header(data, size);
     }
-    return repaired;
+    free(native_methods);
+    return stats;
+}
+
+size_t fpatch_repair_dex_load_calls(unsigned char *data, size_t size,
+                                    const char *module_name,
+                                    const char *library_name) {
+    FpatchDexRepairStats stats = repair_dex(data, size, module_name,
+                                            library_name, NULL);
+    return stats.load_calls;
+}
+
+size_t fpatch_repair_dex_jni_calls(unsigned char *data, size_t size,
+                                   const char * const *jni_exports,
+                                   size_t jni_export_count,
+                                   size_t *skipped_calls) {
+    FpatchJniExportSet exports;
+    FpatchDexRepairStats stats;
+    size_t i;
+    memset(&exports, 0, sizeof(exports));
+    for (i = 0; i < jni_export_count; i++) {
+        add_jni_export(&exports, jni_exports[i]);
+    }
+    stats = repair_dex(data, size, "", "", &exports);
+    if (skipped_calls) {
+        *skipped_calls = stats.skipped_native_calls;
+    }
+    return stats.native_calls;
 }
 
 static int normalize_library_name(const char *input, char *output, size_t size) {
@@ -703,6 +1227,37 @@ static int make_temp_path(const char *base, const char *suffix,
     return written >= 0 && (size_t)written < output_size;
 }
 
+static int collect_removed_library_exports(zip_t *source,
+                                           const FpatchDetachRequest *request,
+                                           const char *library,
+                                           FpatchJniExportSet *exports,
+                                           char *error, size_t error_size) {
+    zip_int64_t count = zip_get_num_entries(source, 0);
+    zip_int64_t i;
+    memset(exports, 0, sizeof(*exports));
+    for (i = 0; i < count; i++) {
+        const char *name = zip_get_name(source, (zip_uint64_t)i, ZIP_FL_UNCHANGED);
+        char abi[32];
+        const char *filename = NULL;
+        if (!name ||
+            !parse_native_entry(name, abi, sizeof(abi), &filename) ||
+            strcmp(filename, library) != 0 ||
+            !abi_allowed(request, abi)) {
+            continue;
+        }
+        if (request->smart_repair) {
+            unsigned char *data = NULL;
+            size_t size = 0;
+            if (!read_entry(source, name, &data, &size, error, error_size)) {
+                return 0;
+            }
+            collect_jni_exports(exports, data, size);
+            free(data);
+        }
+    }
+    return 1;
+}
+
 static void detach_profile(const FpatchDetachRequest *request,
                            FpatchInjectProfile *profile) {
     fpatch_profile_init(profile);
@@ -739,6 +1294,7 @@ int fpatch_detach_apk(const FpatchDetachRequest *request,
     char output_directory[FPATCH_PATH_MAX];
     char keystore[FPATCH_PATH_MAX];
     FpatchInjectProfile signing_profile;
+    FpatchJniExportSet jni_exports;
     int success = 0;
 
     memset(result, 0, sizeof(*result));
@@ -774,6 +1330,11 @@ int fpatch_detach_apk(const FpatchDetachRequest *request,
                  zip_error, request->target);
         goto done;
     }
+    if (!collect_removed_library_exports(source, request, library,
+                                         &jni_exports, error, error_size)) {
+        goto done;
+    }
+    result->jni_exports = jni_exports.count;
     target = zip_open(raw, ZIP_CREATE | ZIP_TRUNCATE, &zip_error);
     if (!target) {
         snprintf(error, error_size, "Cannot create detached APK (zip error %d): %s",
@@ -792,12 +1353,15 @@ int fpatch_detach_apk(const FpatchDetachRequest *request,
         if (request->smart_repair && dex_entry_name(name)) {
             unsigned char *dex = NULL;
             size_t dex_size = 0;
-            size_t repaired;
+            FpatchDexRepairStats repair_stats;
             if (!read_entry(source, name, &dex, &dex_size, error, error_size)) {
                 goto done;
             }
-            repaired = fpatch_repair_dex_load_calls(dex, dex_size, module_name, library);
-            result->repaired_load_calls += repaired;
+            repair_stats = repair_dex(dex, dex_size, module_name, library,
+                                      &jni_exports);
+            result->repaired_load_calls += repair_stats.load_calls;
+            result->repaired_native_calls += repair_stats.native_calls;
+            result->skipped_native_calls += repair_stats.skipped_native_calls;
             if (!add_buffer_entry(target, name, dex, dex_size,
                                   ZIP_CM_DEFLATE, error, error_size)) {
                 free(dex);

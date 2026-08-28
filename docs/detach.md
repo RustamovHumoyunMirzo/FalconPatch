@@ -18,10 +18,8 @@ fpatch detach --target app-fpatch.apk --so mylib --out app-detached.apk
 - produce an unsigned intermediate APK for a later signing pipeline
 - produce a signed APK after removing a library
 
-For apps that call the library directly with literal
-`System.loadLibrary("mylib")` or `System.load(".../libmylib.so")` instructions,
-add `--smart-repair` so FalconPatch patches those call sites while rebuilding
-the APK.
+For apps that call the library directly, add `--smart-repair` so FalconPatch
+patches Java/Kotlin load sites and safe JNI call sites while rebuilding the APK.
 
 ## Required Flags
 
@@ -139,8 +137,9 @@ remove those bootstrap references too.
 
 ## Smart Repair
 
-`--smart-repair` scans every `classes*.dex` entry and repairs literal
-`java.lang.System` native-load calls that point at the detached library:
+`--smart-repair` scans every `classes*.dex` entry and the removed `.so` files.
+It repairs literal `java.lang.System` native-load calls that point at the
+detached library:
 
 ```powershell
 fpatch detach --target app-fpatch.apk --so demo --out app-detached.apk --smart-repair
@@ -153,11 +152,27 @@ System.loadLibrary("demo");
 System.load("/data/local/tmp/libdemo.so");
 ```
 
+FalconPatch also scans the removed native libraries for static JNI exports such
+as:
+
+```text
+Java_com_example_Bridge_ping
+Java_com_example_Bridge_ping__Ljava_lang_String_2
+```
+
+When a DEX declares a matching `native` method and Java/Kotlin code directly
+invokes that method, smart repair can remove the invoke too. For non-void
+object or 32-bit primitive returns, FalconPatch replaces the following
+`move-result` with a default `null`, `false`, or `0` value when that can be
+encoded without resizing the method. Void calls are simply no-oped. Calls that
+would require method resizing, wide-result synthesis, or deeper control-flow
+rewriting are counted as skipped and left unchanged.
+
 The repair is intentionally size-preserving. FalconPatch replaces only the
-matching `invoke-static` or `invoke-static/range` instruction with the same
-number of Dalvik `nop` code units. It does not delete instructions, change
-branch targets, resize methods, or move try/catch regions. After patching a DEX
-file it recomputes the DEX SHA-1 signature and Adler-32 checksum.
+matching invoke instruction with the same number of Dalvik `nop` code units.
+It does not delete instructions, change branch targets, resize methods, or move
+try/catch regions. After patching a DEX file it recomputes the DEX SHA-1
+signature and Adler-32 checksum.
 
 This makes the output verifier-friendly for direct literal load calls. Dynamic
 or indirect cases are reported as zero repaired calls and left unchanged,
@@ -166,7 +181,9 @@ including:
 - library names built from variables or encrypted strings
 - reflection calls that eventually call `System.loadLibrary`
 - custom native loaders
-- `Runtime.load` or framework wrappers that are not `java.lang.System`
+- `RegisterNatives` methods that do not expose static `Java_...` exports
+- wide native return values when the caller immediately consumes `long` or `double`
+- framework wrappers that hide the actual load or JNI call target
 
 Run `inspect` before and after detach to see literal load calls that FalconPatch
 can identify:
@@ -189,6 +206,9 @@ FalconPatch detach complete
   Output: app-detached.apk
   Removed:
     lib/arm64-v8a/libdemo.so
+  Smart repair load calls: 1
+  Smart repair JNI exports: 4
+  Smart repair native calls: 2
 ```
 
 If no matching library entry exists, the command fails instead of producing an
@@ -200,6 +220,8 @@ unchanged APK.
 - `Output APK must not overwrite the target APK`: choose a different `--out`.
 - `No matching libdemo.so entry was found`: check the library name and ABI.
 - `Smart repair load calls: 0`: no literal `System.load` or `System.loadLibrary` call matched the detached library.
+- `Smart repair JNI exports: 0`: the removed `.so` did not expose static JNI symbols, or it uses dynamic registration.
+- `Smart repair skipped native calls`: FalconPatch found JNI callsites that need a wider rewrite than this size-preserving pass can safely perform.
 - `zipalign was not found`: install Android SDK build-tools or omit `--sign`.
 - `Java was not found`: install a JDK or omit `--sign`.
 - `apksigner.jar was not found`: install Android SDK build-tools or omit `--sign`.
