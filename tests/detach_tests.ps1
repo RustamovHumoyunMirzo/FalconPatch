@@ -55,9 +55,13 @@ try {
         throw "detach kept stale APK signature entries."
     }
 
-    $smart = & $Fpatch detach --target $apk --so demo --out $out --smart-repair 2>&1
-    if ($LASTEXITCODE -eq 0 -or ($smart -join "`n") -notmatch "DEX call-site") {
-        throw "detach --smart-repair should fail clearly until DEX repair is implemented."
+    $smartOut = Join-Path $testRoot "fixture-smart-detached.apk"
+    $smart = & $Fpatch detach --target $apk --so demo --out $smartOut --smart-repair 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "detach --smart-repair failed:`n$smart"
+    }
+    if (($smart -join "`n") -notmatch "Smart repair load calls: 0") {
+        throw "detach --smart-repair did not report repaired load calls."
     }
     Write-Host "Detach integration test passed."
 } finally {

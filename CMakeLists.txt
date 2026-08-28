@@ -162,6 +162,24 @@ if(FPATCH_BUILD_TESTS)
         target_compile_options(fpatch_artifact_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME artifact-bundle COMMAND fpatch_artifact_tests)
+    add_executable(fpatch_dex_repair_tests
+        tests/dex_repair_tests.c
+        src/utils/apk_detacher.c
+        src/utils/apk_signer.c
+        src/utils/file_utils.c
+        src/utils/inject_profile.c
+        src/utils/process.c
+        src/utils/sha256.c
+    )
+    target_include_directories(fpatch_dex_repair_tests PRIVATE include)
+    target_link_libraries(fpatch_dex_repair_tests PRIVATE zip yaml)
+    if(MSVC)
+        target_compile_definitions(fpatch_dex_repair_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+        target_compile_options(fpatch_dex_repair_tests PRIVATE /W4)
+    else()
+        target_compile_options(fpatch_dex_repair_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME dex-smart-repair COMMAND fpatch_dex_repair_tests)
     find_program(FPATCH_PWSH_EXECUTABLE NAMES pwsh)
     if(FPATCH_PWSH_EXECUTABLE)
         add_test(NAME host-cmake-flags

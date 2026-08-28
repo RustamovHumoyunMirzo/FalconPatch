@@ -18,7 +18,7 @@ static void print_detach_help(void) {
     puts("  --abi <abi|all>             ABI to target; repeatable. Default: all ABIs.");
     puts("  -a                          Target all ABIs.");
     puts("  --sign                      Align, sign, and verify the output APK.");
-    puts("  --smart-repair              Reserved for safe DEX call-site removal.");
+    puts("  --smart-repair              NOP literal System.load/loadLibrary calls.");
     puts("");
     puts("Signing:");
     puts("  --keystore <file>           Signing keystore; generated debug key by default.");
@@ -112,6 +112,9 @@ static void handle_detach(Command *cmd) {
     puts("  Removed:");
     for (i = 0; i < result.removed_count; i++) {
         printf("    %s\n", result.removed_entries[i]);
+    }
+    if (request.smart_repair) {
+        printf("  Smart repair load calls: %zu\n", result.repaired_load_calls);
     }
     if (result.stripped_falconpatch_payload) {
         puts("  Stripped FalconPatch payload: yes");

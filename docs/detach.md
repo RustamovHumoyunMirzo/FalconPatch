@@ -18,10 +18,10 @@ fpatch detach --target app-fpatch.apk --so mylib --out app-detached.apk
 - produce an unsigned intermediate APK for a later signing pipeline
 - produce a signed APK after removing a library
 
-It is not a complete bytecode repair tool yet. If the app itself still calls
-`System.loadLibrary("mylib")`, the app may still fail at runtime after the
-library is removed. FalconPatch keeps `--smart-repair` guarded until DEX
-call-site rewriting is implemented safely.
+For apps that call the library directly with literal
+`System.loadLibrary("mylib")` or `System.load(".../libmylib.so")` instructions,
+add `--smart-repair` so FalconPatch patches those call sites while rebuilding
+the APK.
 
 ## Required Flags
 
@@ -139,28 +139,43 @@ remove those bootstrap references too.
 
 ## Smart Repair
 
-`--smart-repair` is intentionally blocked right now:
+`--smart-repair` scans every `classes*.dex` entry and repairs literal
+`java.lang.System` native-load calls that point at the detached library:
 
 ```powershell
 fpatch detach --target app-fpatch.apk --so demo --out app-detached.apk --smart-repair
 ```
 
-FalconPatch returns an error explaining that DEX call-site rewriting is not
-enabled yet. This is deliberate. Safely removing calls such as:
+It handles both common forms:
 
 ```java
 System.loadLibrary("demo");
+System.load("/data/local/tmp/libdemo.so");
 ```
 
-requires more than deleting bytes. A production repair pass needs to:
+The repair is intentionally size-preserving. FalconPatch replaces only the
+matching `invoke-static` or `invoke-static/range` instruction with the same
+number of Dalvik `nop` code units. It does not delete instructions, change
+branch targets, resize methods, or move try/catch regions. After patching a DEX
+file it recomputes the DEX SHA-1 signature and Adler-32 checksum.
 
-- find literal and indirect load calls across every DEX
-- understand whether the load result affects later control flow
-- replace the load with a safe no-op or guarded failure path
-- preserve verifier-valid bytecode, registers, try/catch ranges, and checksums
-- keep multidex ordering and APK signing valid
+This makes the output verifier-friendly for direct literal load calls. Dynamic
+or indirect cases are reported as zero repaired calls and left unchanged,
+including:
 
-Until that exists, `detach` only removes ZIP-level native payloads.
+- library names built from variables or encrypted strings
+- reflection calls that eventually call `System.loadLibrary`
+- custom native loaders
+- `Runtime.load` or framework wrappers that are not `java.lang.System`
+
+Run `inspect` before and after detach to see literal load calls that FalconPatch
+can identify:
+
+```powershell
+fpatch inspect --source app-fpatch.apk
+fpatch detach --target app-fpatch.apk --so demo --out app-detached.apk --smart-repair
+fpatch inspect --source app-detached.apk
+```
 
 ## Output Summary
 
@@ -184,7 +199,7 @@ unchanged APK.
 - `detach requires --target, --so, and --out`: one of the required flags is missing.
 - `Output APK must not overwrite the target APK`: choose a different `--out`.
 - `No matching libdemo.so entry was found`: check the library name and ABI.
-- `--smart-repair needs DEX call-site rewriting`: run without `--smart-repair`.
+- `Smart repair load calls: 0`: no literal `System.load` or `System.loadLibrary` call matched the detached library.
 - `zipalign was not found`: install Android SDK build-tools or omit `--sign`.
 - `Java was not found`: install a JDK or omit `--sign`.
 - `apksigner.jar was not found`: install Android SDK build-tools or omit `--sign`.

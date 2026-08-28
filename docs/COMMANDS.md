@@ -237,13 +237,12 @@ fpatch detach --target app-fpatch.apk --so mylib --out app-detached.apk --sign \
   --ks-pass android --key-pass android
 ```
 
-`--smart-repair` is intentionally guarded for now. Removing DEX call sites like
-`System.loadLibrary("mylib")` safely requires bytecode rewriting and method
-control-flow repair; FalconPatch reports a clear error instead of producing an
-APK that is likely to crash.
+`--smart-repair` patches literal `System.loadLibrary("mylib")` and
+`System.load(".../libmylib.so")` calls across DEX files by replacing the invoke
+instruction with same-size no-ops and refreshing DEX checksums.
 
 See [detach.md](detach.md) for ABI selection, signing details, FalconPatch
-runtime removal behavior, and smart-repair limitations.
+runtime removal behavior, and smart-repair details.
 
 ## JSON And YAML Profiles
 
