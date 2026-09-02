@@ -3,10 +3,10 @@ source: app.apk
 output: build/app-fpatch.apk
 scripts:
   lua:
-    - path: examples/helper.lua
+    - path: helper.lua
       module: helper
       entry: false
-    - path: examples/hello.lua
+    - path: hello.lua
       entry: true
 strategy: auto
 bootstrap_language: java

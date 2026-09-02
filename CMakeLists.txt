@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(FalconPatch
-    VERSION 1.7.2
+    VERSION 1.8.0
     LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
@@ -199,8 +199,13 @@ if(FPATCH_BUILD_TESTS)
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/detach_tests.ps1"
                 -Fpatch "$<TARGET_FILE:fpatch>"
                 -WorkDirectory "${CMAKE_CURRENT_BINARY_DIR}")
+        add_test(NAME cli-inspect-module
+            COMMAND "${FPATCH_PWSH_EXECUTABLE}" -NoProfile -File
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/inspect_module_tests.ps1"
+                -Fpatch "$<TARGET_FILE:fpatch>"
+                -WorkDirectory "${CMAKE_CURRENT_BINARY_DIR}")
     endif()
     add_test(NAME cli-version COMMAND fpatch --version)
     add_test(NAME cli-inject-dry-run
-             COMMAND fpatch inject --profile "${CMAKE_CURRENT_SOURCE_DIR}/example_fp_profile.yaml" --dry-run)
+             COMMAND fpatch inject --profile "${CMAKE_CURRENT_SOURCE_DIR}/examples/example_fp_profile.yaml" --dry-run)
 endif()

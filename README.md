@@ -21,6 +21,7 @@ Build the Android artifacts first so the host executable can embed them, then bu
 ```powershell
 fpatch inspect --source app.apk
 fpatch inspect --source app.apk --ndk
+fpatch inspect-module --source app.apk --target mylib
 ```
 ### Inject into APKs
 
@@ -28,7 +29,7 @@ fpatch inspect --source app.apk --ndk
 
 ```powershell
 fpatch inject --source app.apk --lua-entry smoke.lua
-fpatch inject --profile example_fp_profile.yaml
+fpatch inject --profile examples/example_fp_profile.yaml
 fpatch inject --source app.apk --lua-entry smoke.lua --artifacts windows-x86_64.tar.gz
 ```
 
@@ -67,4 +68,4 @@ end
 
 ## Documentation
 
-You can get started with [build guide](docs/BUILD.md) or see the [full command tutorial](docs/COMMANDS.md), [inspect guide](docs/inspect.md), [native extension reference](docs/inject.md), [detach guide](docs/detach.md), and [extension references](docs/extensions/README.md).
+You can get started with [build guide](docs/BUILD.md) or see the [full command tutorial](docs/COMMANDS.md), [native extension reference](docs/inject.md), and [Lua extension reference](docs/extensions/README.md).

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.8.0 - 2026-09-02
+
+- Added `fpatch inspect-module` for focused native module inspection by APK,
+  target library, and optional ABI filters.
+- Added module evidence reporting for Java/Kotlin native loads, JNI exports,
+  likely registered JNI links, native callers, and outbound `.so` references.
+- Updated `inspect` load-call analysis to include `Runtime.load` and
+  `Runtime.loadLibrary`.
+- Moved example profile references to `examples/` across docs and tests.
+- Updated project, CLI, and artifact documentation version references to
+  `1.8.0`.
+
 ## 1.7.2 - 2026-08-28
 
 - Completed the 4/4 `detach --smart-repair` pass with `System.load`,

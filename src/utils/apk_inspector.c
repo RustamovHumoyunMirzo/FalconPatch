@@ -662,13 +662,16 @@ static void add_load_call(ApkInfo *info, const char *dex_name,
 
 static int is_system_load_call(const char *class_name, const char *method_name,
                                const char *params, const char *return_type,
-                               char *api_out, size_t api_size) {
-    if (strcmp(class_name, "java.lang.System") != 0 ||
+                               char *api_out, size_t api_size,
+                               int *string_arg_position) {
+    if ((strcmp(class_name, "java.lang.System") != 0 &&
+         strcmp(class_name, "java.lang.Runtime") != 0) ||
         strcmp(params, "java.lang.String") != 0 ||
         strcmp(return_type, "void") != 0) {
         return 0;
     }
 
+    *string_arg_position = strcmp(class_name, "java.lang.Runtime") == 0 ? 1 : 0;
     if (strcmp(method_name, "loadLibrary") == 0) {
         set_text(api_out, api_size, "loadLibrary");
         return 1;
@@ -679,6 +682,39 @@ static int is_system_load_call(const char *class_name, const char *method_name,
     }
 
     return 0;
+}
+
+static int invoke_argument_register(const unsigned char *data, size_t insns_off,
+                                    uint32_t pc, uint8_t op, uint8_t arg_count,
+                                    unsigned int arg_position, uint16_t *reg) {
+    uint16_t regs;
+    if (arg_position >= arg_count) {
+        return 0;
+    }
+    regs = read_u16(data + insns_off + (pc + 2u) * 2u);
+    if (op >= 0x74u && op <= 0x78u) {
+        *reg = (uint16_t)(regs + arg_position);
+        return 1;
+    }
+    switch (arg_position) {
+        case 0:
+            *reg = (uint16_t)(regs & 0x0fu);
+            return 1;
+        case 1:
+            *reg = (uint16_t)((regs >> 4) & 0x0fu);
+            return 1;
+        case 2:
+            *reg = (uint16_t)((regs >> 8) & 0x0fu);
+            return 1;
+        case 3:
+            *reg = (uint16_t)((regs >> 12) & 0x0fu);
+            return 1;
+        case 4:
+            *reg = (uint16_t)((read_u16(data + insns_off + pc * 2u) >> 8) & 0x0fu);
+            return 1;
+        default:
+            return 0;
+    }
 }
 
 static void scan_code_for_load_calls(ApkInfo *info, const char *dex_name,
@@ -727,16 +763,22 @@ static void scan_code_for_load_calls(ApkInfo *info, const char *dex_name,
                                string_idx, reg_strings[aa], sizeof(reg_strings[aa]));
             }
             advance = 3;
-        } else if (op == 0x71u && pc + 2u < insns_size) {
+        } else if (((op >= 0x6eu && op <= 0x72u) ||
+                    (op >= 0x74u && op <= 0x78u)) &&
+                   pc + 2u < insns_size) {
             uint16_t method_idx = read_u16(data + insns_off + (pc + 1u) * 2u);
-            uint16_t regs = read_u16(data + insns_off + (pc + 2u) * 2u);
             uint8_t arg_count = (uint8_t)((insn >> 8) & 0x0fu);
-            uint8_t first_arg = (uint8_t)(regs & 0x0fu);
             char class_name[256];
             char method_name[128];
             char params[512];
             char return_type[128];
             char api[16];
+            int string_arg_position = 0;
+            uint16_t arg_register = 0;
+
+            if (op >= 0x74u && op <= 0x78u) {
+                arg_count = (uint8_t)(insn >> 8);
+            }
 
             get_method_ref(data, size, string_ids_off, string_ids_size,
                            type_ids_off, type_ids_size, proto_ids_off, proto_ids_size,
@@ -744,11 +786,14 @@ static void scan_code_for_load_calls(ApkInfo *info, const char *dex_name,
                            class_name, sizeof(class_name), method_name, sizeof(method_name),
                            params, sizeof(params), return_type, sizeof(return_type));
 
-            if (arg_count == 1 && first_arg < registers_size &&
-                is_system_load_call(class_name, method_name, params, return_type,
-                                    api, sizeof(api))) {
+            if (is_system_load_call(class_name, method_name, params, return_type,
+                                    api, sizeof(api), &string_arg_position) &&
+                invoke_argument_register(data, insns_off, pc, op, arg_count,
+                                         (unsigned int)string_arg_position,
+                                         &arg_register) &&
+                arg_register < registers_size) {
                 add_load_call(info, dex_name, owner_class, owner_method, api,
-                              reg_strings[first_arg][0] ? reg_strings[first_arg] : "dynamic/unknown");
+                              reg_strings[arg_register][0] ? reg_strings[arg_register] : "dynamic/unknown");
             }
             advance = 3;
         } else if (op == 0x77u && pc + 2u < insns_size) {
@@ -760,6 +805,7 @@ static void scan_code_for_load_calls(ApkInfo *info, const char *dex_name,
             char params[512];
             char return_type[128];
             char api[16];
+            int string_arg_position = 0;
 
             get_method_ref(data, size, string_ids_off, string_ids_size,
                            type_ids_off, type_ids_size, proto_ids_off, proto_ids_size,
@@ -767,11 +813,14 @@ static void scan_code_for_load_calls(ApkInfo *info, const char *dex_name,
                            class_name, sizeof(class_name), method_name, sizeof(method_name),
                            params, sizeof(params), return_type, sizeof(return_type));
 
-            if (arg_count == 1 && first_reg < registers_size &&
+            if (arg_count > 0 &&
                 is_system_load_call(class_name, method_name, params, return_type,
-                                    api, sizeof(api))) {
+                                    api, sizeof(api), &string_arg_position) &&
+                string_arg_position < arg_count &&
+                first_reg + (uint16_t)string_arg_position < registers_size) {
                 add_load_call(info, dex_name, owner_class, owner_method, api,
-                              reg_strings[first_reg][0] ? reg_strings[first_reg] : "dynamic/unknown");
+                              reg_strings[first_reg + string_arg_position][0] ?
+                              reg_strings[first_reg + string_arg_position] : "dynamic/unknown");
             }
             advance = 3;
         }

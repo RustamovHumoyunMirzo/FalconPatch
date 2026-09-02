@@ -4,7 +4,7 @@
 #include <string.h>
 
 #ifndef FPATCH_VERSION
-#define FPATCH_VERSION "1.7.2"
+#define FPATCH_VERSION "1.8.0"
 #endif
 
 static Command g_commands[MAX_CMDS];
@@ -105,7 +105,7 @@ static void print_root_help(void) {
     puts("");
     puts("Commands:");
     for (i = 0; i < g_cmd_count; i++) {
-        printf("  %-10s %s\n", g_commands[i].name,
+        printf("  %-15s %s\n", g_commands[i].name,
                g_commands[i].description ? g_commands[i].description : "");
     }
     puts("");

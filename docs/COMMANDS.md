@@ -57,7 +57,7 @@ The manifest contract starts like this; every packaged file has one entry:
 {
   "schema_version": 1,
   "runtime_api": 1,
-  "falconpatch_version": "1.7.2",
+  "falconpatch_version": "1.8.0",
   "package": "linux-arm64",
   "host": { "platform": "linux", "arch": "arm64" },
   "files": [
@@ -91,7 +91,7 @@ fpatch -v
 ```
 
 With no arguments, `fpatch` prints the author/copyright notice and a help hint.
-`--version` and `-v` print `1.7.2`.
+`--version` and `-v` print `1.8.0`.
 
 ## Inspect An APK
 
@@ -112,6 +112,19 @@ fpatch inspect --source app.apk --ndk
 ```
 
 See [inspect.md](inspect.md) for annotated report examples.
+
+## Inspect A Native Module
+
+`inspect-module` focuses on one native module and reports matching APK entries,
+Java/Kotlin load sites, likely JNI method links, native modules that reference
+the target, and `.so` strings referenced by the target module.
+
+```powershell
+fpatch inspect-module --source app.apk --target libmylib
+fpatch inspect-module --source app.apk --target mylib --abi arm64-v8a
+```
+
+See [inspect-module.md](inspect-module.md) for the detailed evidence model.
 
 ## Inject: Smallest Example
 
@@ -251,8 +264,8 @@ runtime removal behavior, and smart-repair details.
 Both formats use the same schema. Run either example without writing output:
 
 ```powershell
-fpatch inject --profile example_fp_profile.json --dry-run
-fpatch inject --profile example_fp_profile.yaml --dry-run
+fpatch inject --profile examples/example_fp_profile.json --dry-run
+fpatch inject --profile examples/example_fp_profile.yaml --dry-run
 ```
 
 Paths in a profile are resolved relative to the profile file. CLI values

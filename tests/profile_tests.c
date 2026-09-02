@@ -20,7 +20,7 @@ static int test_json_profile(void) {
     char error[512] = "";
     int passed = 0;
 
-    if (!profile || !make_path(path, sizeof(path), "example_fp_profile.json")) {
+    if (!profile || !make_path(path, sizeof(path), "examples/example_fp_profile.json")) {
         goto done;
     }
     fpatch_profile_init(profile);
@@ -45,7 +45,7 @@ static int test_yaml_payload(void) {
     char error[512] = "";
     int passed = 0;
 
-    if (!profile || !make_path(path, sizeof(path), "example_fp_profile.yaml")) {
+    if (!profile || !make_path(path, sizeof(path), "examples/example_fp_profile.yaml")) {
         goto done;
     }
     fpatch_profile_init(profile);
