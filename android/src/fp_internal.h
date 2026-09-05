@@ -78,9 +78,9 @@ int fp_lua_run_archive(lua_State *state, const FpArchive *archive);
 int fp_open_jni_module(lua_State *state);
 int fp_open_gui_module(lua_State *state);
 int fp_open_ui_module(lua_State *state);
+int fp_open_assets_module(lua_State *state);
 int fp_open_events_module(lua_State *state);
 int fp_open_intent_module(lua_State *state);
 int fp_open_app_module(lua_State *state);
-int fp_open_background_worker_module(lua_State *state);
 
 #endif

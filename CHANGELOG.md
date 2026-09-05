@@ -8,6 +8,14 @@
   likely registered JNI links, native callers, and outbound `.so` references.
 - Updated `inspect` load-call analysis to include `Runtime.load` and
   `Runtime.loadLibrary`.
+- Added a built-in Lua `assets` module for injected asset reads, listing,
+  normalized paths, and ImageView/WebView handles.
+- Removed the detached `background-worker` Lua module from the built-in Android
+  runtime.
+- Expanded global Lua helpers with ABI, runtime metadata, wall/monotonic clocks,
+  and a protected-call helper.
+- Added convenience aliases and an `app.info()` snapshot across built-in Lua
+  modules.
 - Moved example profile references to `examples/` across docs and tests.
 - Updated project, CLI, and artifact documentation version references to
   `1.8.0`.

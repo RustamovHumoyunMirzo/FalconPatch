@@ -34,6 +34,7 @@ import android.widget.ImageView;
 import android.widget.ListView;
 import android.widget.Switch;
 import android.webkit.WebView;
+import java.io.InputStream;
 import java.io.StringReader;
 import java.lang.ref.WeakReference;
 import java.util.ArrayDeque;
@@ -270,7 +271,7 @@ public final class RuntimeBridge {
                 } else if ("webview".equals(type)) {
                     WebView webView = new WebView(target.container.getContext());
                     if (text != null && text.length() > 0) {
-                        webView.loadDataWithBaseURL(null, text, "text/html", "UTF-8", null);
+                        loadWebView(webView, text);
                     }
                     view = webView;
                 } else {
@@ -372,7 +373,7 @@ public final class RuntimeBridge {
                     return setImageSource((ImageView) element.view, actual);
                 }
                 if ("url".equals(key) && element.view instanceof WebView) {
-                    ((WebView) element.view).loadUrl(actual);
+                    loadWebView((WebView) element.view, actual);
                     return true;
                 }
                 return false;
@@ -969,6 +970,17 @@ public final class RuntimeBridge {
 
     private static boolean setImageSource(ImageView image, String source) {
         try {
+            String assetName = assetNameFromSource(source);
+            if (assetName != null) {
+                InputStream input = image.getContext().getAssets().open(assetName);
+                try {
+                    Bitmap bitmap = BitmapFactory.decodeStream(input);
+                    image.setImageBitmap(bitmap);
+                    return bitmap != null;
+                } finally {
+                    input.close();
+                }
+            }
             if (source.startsWith("data:image")) {
                 int comma = source.indexOf(',');
                 if (comma >= 0) {
@@ -984,6 +996,52 @@ public final class RuntimeBridge {
             Log.e(TAG, "Could not set image source.", error);
             return false;
         }
+    }
+
+    private static void loadWebView(WebView webView, String source) {
+        String actual = source == null ? "" : source;
+        String assetName = assetNameFromSource(actual);
+        if (assetName != null) {
+            webView.loadUrl(androidAssetUrl(assetName));
+        } else if (isLoadableUrl(actual)) {
+            webView.loadUrl(actual);
+        } else {
+            webView.loadDataWithBaseURL(null, actual, "text/html", "UTF-8", null);
+        }
+    }
+
+    private static boolean isLoadableUrl(String source) {
+        return source.startsWith("http://") ||
+                source.startsWith("https://") ||
+                source.startsWith("file://") ||
+                source.startsWith("content://") ||
+                source.startsWith("data:");
+    }
+
+    private static String assetNameFromSource(String source) {
+        String value = source == null ? "" : source;
+        if (value.startsWith("fpatch-asset://")) {
+            return value.substring("fpatch-asset://".length());
+        }
+        if (value.startsWith("asset://")) {
+            return value.substring("asset://".length());
+        }
+        if (value.startsWith("file:///android_asset/")) {
+            return value.substring("file:///android_asset/".length());
+        }
+        return null;
+    }
+
+    private static String androidAssetUrl(String assetName) {
+        StringBuilder url = new StringBuilder("file:///android_asset/");
+        String[] parts = assetName.split("/");
+        for (int i = 0; i < parts.length; i++) {
+            if (i > 0) {
+                url.append('/');
+            }
+            url.append(Uri.encode(parts[i]));
+        }
+        return url.toString();
     }
 
     private static void attachElementListeners(final ElementState element) {

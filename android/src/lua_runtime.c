@@ -3,6 +3,7 @@
 #include <android/log.h>
 #include <lauxlib.h>
 #include <lualib.h>
+#include <time.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -55,9 +56,84 @@ static int lua_host_version(lua_State *state) {
 #ifdef FPATCH_ANDROID_VERSION
     lua_pushstring(state, FPATCH_ANDROID_VERSION);
 #else
-    lua_pushliteral(state, "1.5.0");
+    lua_pushliteral(state, "1.8.0");
 #endif
     return 1;
+}
+
+static int lua_host_abi(lua_State *state) {
+#ifdef FPATCH_ANDROID_ABI
+    lua_pushstring(state, FPATCH_ANDROID_ABI);
+#else
+    lua_pushliteral(state, "unknown");
+#endif
+    return 1;
+}
+
+static int lua_host_now_ms(lua_State *state) {
+    struct timespec spec;
+
+    if (clock_gettime(CLOCK_REALTIME, &spec) != 0) {
+        lua_pushinteger(state, 0);
+        return 1;
+    }
+    lua_pushinteger(state, (lua_Integer)spec.tv_sec * 1000 +
+                           (lua_Integer)(spec.tv_nsec / 1000000));
+    return 1;
+}
+
+static int lua_host_monotonic_ms(lua_State *state) {
+    struct timespec spec;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &spec) != 0) {
+        lua_pushinteger(state, 0);
+        return 1;
+    }
+    lua_pushinteger(state, (lua_Integer)spec.tv_sec * 1000 +
+                           (lua_Integer)(spec.tv_nsec / 1000000));
+    return 1;
+}
+
+static int lua_host_runtime(lua_State *state) {
+    lua_newtable(state);
+    lua_host_version(state);
+    lua_setfield(state, -2, "version");
+    lua_host_abi(state);
+    lua_setfield(state, -2, "abi");
+    lua_pushboolean(state, g_fp_runtime.started);
+    lua_setfield(state, -2, "started");
+    lua_pushinteger(state, (lua_Integer)g_fp_runtime.archive.record_count);
+    lua_setfield(state, -2, "records");
+    lua_pushboolean(state, g_fp_runtime.asset_manager != NULL);
+    lua_setfield(state, -2, "assets");
+    return 1;
+}
+
+static int lua_host_try(lua_State *state) {
+    int top = lua_gettop(state);
+    int nargs = top - 1;
+    int status;
+
+    luaL_checktype(state, 1, LUA_TFUNCTION);
+    lua_pushvalue(state, 1);
+    if (nargs > 0) {
+        int i;
+        for (i = 0; i < nargs; i++) {
+            lua_pushvalue(state, 2 + i);
+        }
+    }
+    status = lua_pcall(state, nargs, LUA_MULTRET, 0);
+    if (status != LUA_OK) {
+        lua_pushboolean(state, 0);
+        lua_insert(state, -2);
+        return 2;
+    }
+    {
+        int results = lua_gettop(state) - top;
+        lua_pushboolean(state, 1);
+        lua_insert(state, top + 1);
+        return results + 1;
+    }
 }
 
 static void restrict_package(lua_State *state) {
@@ -115,6 +191,16 @@ int fp_lua_open_restricted(lua_State *state) {
     lua_setfield(state, -2, "log");
     lua_pushcfunction(state, lua_host_version);
     lua_setfield(state, -2, "version");
+    lua_pushcfunction(state, lua_host_abi);
+    lua_setfield(state, -2, "abi");
+    lua_pushcfunction(state, lua_host_now_ms);
+    lua_setfield(state, -2, "now_ms");
+    lua_pushcfunction(state, lua_host_monotonic_ms);
+    lua_setfield(state, -2, "monotonic_ms");
+    lua_pushcfunction(state, lua_host_runtime);
+    lua_setfield(state, -2, "runtime");
+    lua_pushcfunction(state, lua_host_try);
+    lua_setfield(state, -2, "try");
     lua_setglobal(state, "fpatch");
     return 1;
 }

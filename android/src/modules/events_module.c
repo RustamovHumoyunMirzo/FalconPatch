@@ -193,12 +193,17 @@ static int lua_on_hover(lua_State *state) {
 int fp_open_events_module(lua_State *state) {
     static const luaL_Reg functions[] = {
         {"poll", lua_poll},
+        {"next", lua_poll},
         {"drain", lua_drain},
+        {"all", lua_drain},
         {"emit", lua_emit},
         {"onClick", lua_on_click},
         {"onDown", lua_on_down},
+        {"onTouch", lua_on_down},
         {"onUp", lua_on_up},
+        {"onRelease", lua_on_up},
         {"onDrag", lua_on_drag},
+        {"onMove", lua_on_drag},
         {"onHover", lua_on_hover},
         {NULL, NULL}
     };

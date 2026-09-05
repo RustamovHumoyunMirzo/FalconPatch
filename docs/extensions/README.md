@@ -15,21 +15,24 @@ shared table.
 
 - [`jni`](jni.md): selected Android and Java access
 - [`app`](app.md): package, SDK, foreground, and activity state
+- [`assets`](assets.md): injected asset lookup, reads, and UI handles
 - [`ui`](ui.md): toast, overlays, XML loading, and view inspection
 - [`gui`](gui.md): compatibility alias for `ui`
 - [`events`](events.md): lifecycle and custom event polling
 - [`intent`](intent.md): activity and broadcast intents
-- [`background-worker`](background-worker.md): restricted detached Lua jobs
 
 Imported APIs are available only after loading their module:
 
 ```lua
 local jni = require("jni")
 local ui = require("ui")
+local assets = require("assets")
 ```
 
 Only the small `fpatch` table is installed globally. FalconPatch does not add
-imported module tables to the global namespace.
+imported module tables to the global namespace. Several modules provide both
+snake_case and Android-style camelCase aliases for common operations so Lua
+scripts can stay compact without needing global helper tables.
 
 ---
 

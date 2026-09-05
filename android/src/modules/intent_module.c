@@ -67,7 +67,9 @@ static int lua_broadcast(lua_State *state) {
 int fp_open_intent_module(lua_State *state) {
     static const luaL_Reg functions[] = {
         {"start_activity", lua_start_activity},
+        {"startActivity", lua_start_activity},
         {"broadcast", lua_broadcast},
+        {"sendBroadcast", lua_broadcast},
         {NULL, NULL}
     };
     luaL_newlib(state, functions);

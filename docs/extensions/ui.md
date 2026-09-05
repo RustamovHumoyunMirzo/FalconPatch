@@ -4,6 +4,7 @@ Load the module before using it:
 
 ```lua
 local ui = require("ui")
+local assets = require("assets")
 ```
 
 UI work is dispatched through the Java bootstrap on Android's main thread.
@@ -84,6 +85,12 @@ checkbox:weight(1.0)
 local web = overlay:addWebView("<b>FalconPatch</b>")
 web:width(ui.FILL_SCREEN_WIDTH)
 web:height(220)
+
+local logo = overlay:addImage(assets.image("debug-overlay.png"))
+logo:width(96)
+logo:height(96)
+
+web:url(assets.webview("panel.html"))
 ```
 
 Element factories:
@@ -100,6 +107,10 @@ Element factories:
 | `addHLayout()`, `addVLayout()` | horizontal or vertical `LinearLayout` |
 | `addImage(uri_or_data_url)` | `ImageView` |
 | `addWebView(html)` | `WebView` |
+
+`addImage()` accepts `data:image...` URLs, regular Android `Uri` strings, and
+handles returned by `assets.image(...)`. `addWebView()` accepts inline HTML; use
+`web:url(...)` or pass `assets.webview(...)` to load an injected HTML asset.
 
 Element methods:
 

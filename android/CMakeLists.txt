@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(FalconPatchAndroid VERSION 1.5.0 LANGUAGES C)
+project(FalconPatchAndroid VERSION 1.8.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -64,7 +64,7 @@ add_library(falconpatch SHARED
     src/module_loader.c
     src/runtime.c
     src/modules/app_module.c
-    src/modules/background_worker.c
+    src/modules/assets_module.c
     src/modules/events_module.c
     src/modules/gui_module.c
     src/modules/intent_module.c

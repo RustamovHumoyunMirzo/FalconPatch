@@ -139,12 +139,30 @@ static int lua_sdk_int(lua_State *state) {
     return 1;
 }
 
+static int lua_info(lua_State *state) {
+    lua_newtable(state);
+    lua_package_name(state);
+    lua_setfield(state, -2, "package_name");
+    lua_sdk_int(state);
+    lua_setfield(state, -2, "sdk_int");
+    lua_current_activity(state);
+    lua_setfield(state, -2, "current_activity");
+    lua_foreground(state);
+    lua_setfield(state, -2, "foreground");
+    return 1;
+}
+
 int fp_open_app_module(lua_State *state) {
     static const luaL_Reg functions[] = {
         {"package_name", lua_package_name},
+        {"packageName", lua_package_name},
         {"sdk_int", lua_sdk_int},
+        {"sdkInt", lua_sdk_int},
         {"current_activity", lua_current_activity},
+        {"currentActivity", lua_current_activity},
         {"foreground", lua_foreground},
+        {"isForeground", lua_foreground},
+        {"info", lua_info},
         {NULL, NULL}
     };
     luaL_newlib(state, functions);
