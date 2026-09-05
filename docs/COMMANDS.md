@@ -57,7 +57,7 @@ The manifest contract starts like this; every packaged file has one entry:
 {
   "schema_version": 1,
   "runtime_api": 1,
-  "falconpatch_version": "1.8.0",
+  "falconpatch_version": "1.9.0",
   "package": "linux-arm64",
   "host": { "platform": "linux", "arch": "arm64" },
   "files": [
@@ -91,7 +91,7 @@ fpatch -v
 ```
 
 With no arguments, `fpatch` prints the author/copyright notice and a help hint.
-`--version` and `-v` print `1.8.0`.
+`--version` and `-v` print `1.9.0`.
 
 ## Inspect An APK
 
@@ -301,6 +301,10 @@ signing:
   alias: androiddebugkey
   store_password: android
   key_password: android
+dex_patches:
+  - target: com.example.app.Config
+    method: isDebuggable()Z
+    action: return_true
 ```
 
 The optional `artifacts` path is resolved relative to the profile, just like the
@@ -308,6 +312,11 @@ source and payload inputs. A CLI `--artifacts` value overrides it. Native input
 fields are `path`, optional `abi`, optional APK `name`, optional
 `init`, and optional Lua `module`. Lua fields are `path`, optional `module`, and
 `entry`.
+
+`dex_patches` are applied to the original `classes*.dex` files before the
+bootstrap DEX is added. Select methods with their exact JVM descriptor or use
+equal-length string replacement. Injection fails if any patch matches nothing.
+See [dex-patches.md](dex-patches.md) for actions, constraints, and examples.
 
 ## Strategies
 

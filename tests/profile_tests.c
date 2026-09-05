@@ -123,6 +123,33 @@ done:
     return passed;
 }
 
+static int test_dex_patch_profile(void) {
+    FpatchInjectProfile *profile = (FpatchInjectProfile *)malloc(sizeof(*profile));
+    char path[FPATCH_PATH_MAX];
+    char error[512] = "";
+    int passed = 0;
+
+    if (!profile || !make_path(path, sizeof(path), "tests/dex_profile.yaml")) {
+        goto done;
+    }
+    fpatch_profile_init(profile);
+    if (!fpatch_profile_load(path, profile, error, sizeof(error)) ||
+        !fpatch_profile_validate(profile, error, sizeof(error))) {
+        fprintf(stderr, "DEX profile: %s\n", error);
+        goto done;
+    }
+    passed = profile->dex_patch_count == 2 &&
+             profile->dex_patches[0].action == FPATCH_DEX_PATCH_RETURN_TRUE &&
+             strcmp(profile->dex_patches[0].method, "isDebuggable()Z") == 0 &&
+             profile->dex_patches[1].action == FPATCH_DEX_PATCH_REPLACE_STRING &&
+             strcmp(profile->dex_patches[1].string_to,
+                    "http://10.0.2.2:8080") == 0;
+
+done:
+    free(profile);
+    return passed;
+}
+
 int main(void) {
     if (!test_json_profile()) {
         fprintf(stderr, "JSON profile test failed.\n");
@@ -138,6 +165,10 @@ int main(void) {
     }
     if (!test_artifact_profile_path()) {
         fprintf(stderr, "Artifact profile path test failed.\n");
+        return 1;
+    }
+    if (!test_dex_patch_profile()) {
+        fprintf(stderr, "DEX patch profile test failed.\n");
         return 1;
     }
     puts("Profile and payload tests passed.");

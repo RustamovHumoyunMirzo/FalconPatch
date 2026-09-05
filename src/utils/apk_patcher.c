@@ -283,6 +283,7 @@ int fpatch_inject_apk(const FpatchInjectProfile *requested_profile,
     FpatchEmbeddedResource dex;
     unsigned char *payload = NULL;
     size_t payload_size = 0;
+    size_t dex_patch_applied[FPATCH_MAX_DEX_PATCHES] = {0};
     FpatchArchivePatch archive_patch;
     OutputArtifact artifacts[FPATCH_MAX_OUTPUT_APKS];
     size_t artifact_count;
@@ -415,6 +416,9 @@ int fpatch_inject_apk(const FpatchInjectProfile *requested_profile,
     archive_patch.bootstrap_dex_size = dex.size;
     archive_patch.payload = payload;
     archive_patch.payload_size = payload_size;
+    archive_patch.dex_patch_applied = dex_patch_applied;
+    archive_patch.dex_methods_patched = &result->dex_methods_patched;
+    archive_patch.dex_strings_replaced = &result->dex_strings_replaced;
     archive_patch.target_abi_count = result->target_abi_count;
     memcpy(archive_patch.target_abis, result->target_abis,
            sizeof(archive_patch.target_abis));

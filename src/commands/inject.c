@@ -169,6 +169,7 @@ static int print_dry_run(const FpatchInjectProfile *profile,
     printf("  Lua scripts: %zu\n", profile->lua_count);
     printf("  Assets: %zu\n", profile->asset_count);
     printf("  Split APKs: %zu\n", profile->split_count);
+    printf("  DEX patches: %zu\n", profile->dex_patch_count);
     printf("  Random runtime name: %s\n", profile->random_libname ? "yes" : "no");
     printf("  Signing: %s\n", profile->no_sign ? "disabled" : "enabled");
     fpatch_artifact_bundle_free(&bundle);
@@ -274,6 +275,8 @@ static void handle_inject(Command *cmd) {
     printf("  Bootstrap: %s\n", result->bootstrap_language);
     printf("  Artifacts: %s\n", result->artifact_package);
     printf("  Runtime library: lib%s.so\n", result->runtime_library);
+    printf("  DEX methods patched: %zu\n", result->dex_methods_patched);
+    printf("  DEX strings replaced: %zu\n", result->dex_strings_replaced);
     printf("  Signing: %s\n", result->resigned ? "resigned and verified" : "unsigned");
     puts("  Outputs:");
     for (i = 0; i < result->output_count; i++) {

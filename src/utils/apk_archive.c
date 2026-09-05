@@ -1,5 +1,6 @@
 #include "utils/apk_archive.h"
 #include "utils/axml.h"
+#include "utils/dex_transformer.h"
 #include "utils/file_utils.h"
 #include "utils/payload_archive.h"
 
@@ -206,6 +207,30 @@ static int add_buffer_entry(zip_t *archive, const char *name,
     return 1;
 }
 
+static int add_owned_buffer_entry(zip_t *archive, const char *name,
+                                  unsigned char *data, size_t size,
+                                  zip_int32_t compression,
+                                  char *error, size_t error_size) {
+    zip_source_t *source = zip_source_buffer(archive, data, size, 1);
+    zip_int64_t index;
+    if (!source) {
+        free(data);
+        snprintf(error, error_size, "Cannot allocate ZIP source for: %s", name);
+        return 0;
+    }
+    index = zip_file_add(archive, name, source, ZIP_FL_ENC_UTF_8 | ZIP_FL_OVERWRITE);
+    if (index < 0) {
+        zip_source_free(source);
+        snprintf(error, error_size, "Cannot add transformed APK entry: %s", name);
+        return 0;
+    }
+    if (zip_set_file_compression(archive, (zip_uint64_t)index, compression, 0) != 0) {
+        snprintf(error, error_size, "Cannot set APK compression for: %s", name);
+        return 0;
+    }
+    return 1;
+}
+
 static int add_disk_entry(zip_t *archive, const char *name, const char *path,
                           zip_int32_t compression,
                           char *error, size_t error_size) {
@@ -249,6 +274,31 @@ static int copy_regular_entries(zip_t *source, zip_t *target,
             *highest_dex = number;
         }
         if (is_signature_entry(name) || entry_will_be_replaced(name, patch)) {
+            continue;
+        }
+        if (number && patch->profile->dex_patch_count > 0) {
+            unsigned char *dex = NULL;
+            size_t dex_size = 0;
+            FpatchDexTransformStats stats = {0};
+            if (!read_entry(source, name, &dex, &dex_size, error, error_size) ||
+                !fpatch_transform_dex(dex, dex_size,
+                                      patch->profile->dex_patches,
+                                      patch->profile->dex_patch_count,
+                                      patch->dex_patch_applied, &stats,
+                                      error, error_size)) {
+                free(dex);
+                return 0;
+            }
+            if (patch->dex_methods_patched) {
+                *patch->dex_methods_patched += stats.methods_patched;
+            }
+            if (patch->dex_strings_replaced) {
+                *patch->dex_strings_replaced += stats.strings_replaced;
+            }
+            if (!add_owned_buffer_entry(target, name, dex, dex_size,
+                                        ZIP_CM_DEFLATE, error, error_size)) {
+                return 0;
+            }
             continue;
         }
         if (!copy_entry(source, target, (zip_uint64_t)i, name, error, error_size)) {
@@ -330,6 +380,21 @@ int fpatch_patch_base_archive(const char *source_path, const char *output_path,
                           patch->payload, patch->payload_size,
                           ZIP_CM_DEFLATE, error, error_size)) {
         goto done;
+    }
+    for (i = 0; i < patch->profile->dex_patch_count; i++) {
+        if (!patch->dex_patch_applied || patch->dex_patch_applied[i] == 0) {
+            const FpatchDexPatch *dex_patch = &patch->profile->dex_patches[i];
+            if (dex_patch->action == FPATCH_DEX_PATCH_REPLACE_STRING) {
+                snprintf(error, error_size,
+                         "DEX patch %zu matched no string in target class DEX: %s",
+                         i + 1, dex_patch->target);
+            } else {
+                snprintf(error, error_size,
+                         "DEX patch %zu matched no method: %s.%s",
+                         i + 1, dex_patch->target, dex_patch->method);
+            }
+            goto done;
+        }
     }
     snprintf(dex_name, sizeof(dex_name), "classes%u.dex", highest_dex + 1u);
     if (highest_dex == 0) {

@@ -395,6 +395,109 @@ static int load_lua(yaml_document_t *document, yaml_node_t *root,
     return 1;
 }
 
+static FpatchDexPatchAction dex_patch_action(const char *value) {
+    if (!value) {
+        return 0;
+    }
+    if (strcmp(value, "return_true") == 0) {
+        return FPATCH_DEX_PATCH_RETURN_TRUE;
+    }
+    if (strcmp(value, "return_false") == 0) {
+        return FPATCH_DEX_PATCH_RETURN_FALSE;
+    }
+    if (strcmp(value, "return_zero") == 0) {
+        return FPATCH_DEX_PATCH_RETURN_ZERO;
+    }
+    if (strcmp(value, "return_null") == 0) {
+        return FPATCH_DEX_PATCH_RETURN_NULL;
+    }
+    if (strcmp(value, "return_void") == 0) {
+        return FPATCH_DEX_PATCH_RETURN_VOID;
+    }
+    return 0;
+}
+
+static int load_dex_patches(yaml_document_t *document, yaml_node_t *root,
+                            FpatchInjectProfile *profile,
+                            char *error, size_t error_size) {
+    yaml_node_t *sequence = mapping_value(document, root, "dex_patches");
+    yaml_node_item_t *item;
+
+    if (!sequence) {
+        return 1;
+    }
+    if (sequence->type != YAML_SEQUENCE_NODE) {
+        set_error(error, error_size, "dex_patches must be a sequence.");
+        return 0;
+    }
+    for (item = sequence->data.sequence.items.start;
+         item < sequence->data.sequence.items.top; item++) {
+        yaml_node_t *node = yaml_document_get_node(document, *item);
+        yaml_node_t *replace;
+        FpatchDexPatch *patch;
+        const char *target;
+        const char *method;
+        const char *action;
+
+        if (!node || node->type != YAML_MAPPING_NODE) {
+            set_error(error, error_size, "Every dex_patches item must be a mapping.");
+            return 0;
+        }
+        if (profile->dex_patch_count >= FPATCH_MAX_DEX_PATCHES) {
+            set_error(error, error_size, "Too many declarative DEX patches.");
+            return 0;
+        }
+        patch = &profile->dex_patches[profile->dex_patch_count];
+        memset(patch, 0, sizeof(*patch));
+        target = scalar_value(mapping_value(document, node, "target"));
+        method = scalar_value(mapping_value(document, node, "method"));
+        action = scalar_value(mapping_value(document, node, "action"));
+        replace = mapping_value(document, node, "replace_string");
+        if (!target || !target[0] ||
+            !copy_text(patch->target, sizeof(patch->target), target,
+                       error, error_size)) {
+            set_error(error, error_size, "Every DEX patch requires a target class.");
+            return 0;
+        }
+        if (replace) {
+            const char *from;
+            const char *to;
+            if (method || action || replace->type != YAML_MAPPING_NODE) {
+                set_error(error, error_size,
+                          "replace_string cannot be combined with method/action.");
+                return 0;
+            }
+            from = scalar_value(mapping_value(document, replace, "from"));
+            to = scalar_value(mapping_value(document, replace, "to"));
+            if (!from || !to || !from[0] || strcmp(from, to) == 0 ||
+                !copy_text(patch->string_from, sizeof(patch->string_from), from,
+                           error, error_size) ||
+                !copy_text(patch->string_to, sizeof(patch->string_to), to,
+                           error, error_size)) {
+                set_error(error, error_size,
+                          "replace_string requires distinct, non-empty from/to values.");
+                return 0;
+            }
+            patch->action = FPATCH_DEX_PATCH_REPLACE_STRING;
+        } else {
+            const char *open = method ? strchr(method, '(') : NULL;
+            const char *close = open ? strchr(open, ')') : NULL;
+            FpatchDexPatchAction parsed_action = dex_patch_action(action);
+            if (!method || !method[0] || !open || open == method || !close ||
+                !close[1] || method[0] == '<' || !parsed_action ||
+                !copy_text(patch->method, sizeof(patch->method), method,
+                           error, error_size)) {
+                set_error(error, error_size,
+                          "Method DEX patches require method and a supported return action.");
+                return 0;
+            }
+            patch->action = parsed_action;
+        }
+        profile->dex_patch_count++;
+    }
+    return 1;
+}
+
 static int load_signing(yaml_document_t *document, yaml_node_t *root,
                         const char *directory, FpatchInjectProfile *profile,
                         char *error, size_t error_size) {
@@ -503,6 +606,7 @@ int fpatch_profile_load(const char *path, FpatchInjectProfile *profile,
     }
     if (!load_native(&document, root, directory, profile, error, error_size) ||
         !load_lua(&document, root, directory, profile, error, error_size) ||
+        !load_dex_patches(&document, root, profile, error, error_size) ||
         !load_path_sequence(&document, root, "assets", directory, profile, 0, error, error_size) ||
         !load_path_sequence(&document, root, "splits", directory, profile, 1, error, error_size) ||
         !load_signing(&document, root, directory, profile, error, error_size)) {
@@ -554,6 +658,51 @@ int fpatch_profile_validate(const FpatchInjectProfile *profile,
         if (!profile->lua[i].path[0]) {
             set_error(error, error_size, "A Lua script has no path.");
             return 0;
+        }
+    }
+    if (profile->dex_patch_count > FPATCH_MAX_DEX_PATCHES) {
+        set_error(error, error_size, "Too many declarative DEX patches.");
+        return 0;
+    }
+    for (i = 0; i < profile->dex_patch_count; i++) {
+        size_t j;
+        const FpatchDexPatch *patch = &profile->dex_patches[i];
+        if (!patch->target[0] || patch->action < FPATCH_DEX_PATCH_RETURN_TRUE ||
+            patch->action > FPATCH_DEX_PATCH_REPLACE_STRING) {
+            set_error(error, error_size, "A declarative DEX patch is incomplete.");
+            return 0;
+        }
+        if (patch->action == FPATCH_DEX_PATCH_REPLACE_STRING &&
+            (!patch->string_from[0] || !patch->string_to[0] ||
+             strcmp(patch->string_from, patch->string_to) == 0 ||
+             strlen(patch->string_from) != strlen(patch->string_to))) {
+            set_error(error, error_size,
+                      "replace_string requires distinct, equal-length from/to values.");
+            return 0;
+        }
+        if (patch->action != FPATCH_DEX_PATCH_REPLACE_STRING &&
+            (!patch->method[0] || patch->method[0] == '<')) {
+            set_error(error, error_size, "A method DEX patch has an invalid selector.");
+            return 0;
+        }
+        for (j = 0; j < i; j++) {
+            const FpatchDexPatch *prior = &profile->dex_patches[j];
+            if (patch->action != FPATCH_DEX_PATCH_REPLACE_STRING &&
+                prior->action != FPATCH_DEX_PATCH_REPLACE_STRING &&
+                strcmp(patch->target, prior->target) == 0 &&
+                strcmp(patch->method, prior->method) == 0) {
+                set_error(error, error_size,
+                          "Duplicate target/method entries are not allowed in dex_patches.");
+                return 0;
+            }
+            if (patch->action == FPATCH_DEX_PATCH_REPLACE_STRING &&
+                prior->action == FPATCH_DEX_PATCH_REPLACE_STRING &&
+                strcmp(patch->target, prior->target) == 0 &&
+                strcmp(patch->string_from, prior->string_from) == 0) {
+                set_error(error, error_size,
+                          "Duplicate target/from entries are not allowed in dex_patches.");
+                return 0;
+            }
         }
     }
     return 1;

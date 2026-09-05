@@ -1,0 +1,13 @@
+name: declarative-dex-test
+source: app.apk
+output: build/app-dex-patched.apk
+dex_patches:
+  - target: com.example.app.Config
+    method: isDebuggable()Z
+    action: return_true
+  - target: com.example.app.Network
+    replace_string:
+      from: https://api.prod.com
+      to: http://10.0.2.2:8080
+strategy: auto
+bootstrap_language: java

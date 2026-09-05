@@ -1,0 +1,10 @@
+name: dex-transform-test
+source: fixture.apk
+dex_patches:
+  - target: com.example.Config
+    method: isDebuggable()Z
+    action: return_true
+  - target: com.example.Network
+    replace_string:
+      from: https://api.prod.com
+      to: http://10.0.2.2:8080

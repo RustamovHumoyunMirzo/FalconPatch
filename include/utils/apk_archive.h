@@ -25,6 +25,9 @@ typedef struct {
     size_t target_abi_count;
     FpatchRuntimePayload runtimes[FPATCH_MAX_TARGET_ABIS];
     size_t runtime_count;
+    size_t *dex_patch_applied;
+    size_t *dex_methods_patched;
+    size_t *dex_strings_replaced;
 } FpatchArchivePatch;
 
 int fpatch_patch_base_archive(const char *source_path, const char *output_path,

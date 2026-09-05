@@ -1185,7 +1185,7 @@ static size_t repair_dex_code_item(unsigned char *data, size_t size,
     }
     registers_size = read_u16(data + code_off);
     insns_size = read_u32(data + code_off + 12u);
-    if (registers_size == 0 || registers_size > 65535u ||
+    if (registers_size == 0 ||
         insns_size == 0 || code_off + 16u + (size_t)insns_size * 2u > size) {
         return 0;
     }
@@ -1682,11 +1682,11 @@ int fpatch_detach_apk(const FpatchDetachRequest *request,
     zip_int64_t i;
     char library[128];
     char module_name[128];
-    char raw[FPATCH_PATH_MAX];
+    char raw[FPATCH_PATH_MAX] = "";
     char output_directory[FPATCH_PATH_MAX];
     char keystore[FPATCH_PATH_MAX];
-    FpatchInjectProfile signing_profile;
-    FpatchJniExportSet jni_exports;
+    FpatchInjectProfile *signing_profile = NULL;
+    FpatchJniExportSet *jni_exports = NULL;
     int success = 0;
 
     memset(result, 0, sizeof(*result));
@@ -1716,6 +1716,13 @@ int fpatch_detach_apk(const FpatchDetachRequest *request,
         return 0;
     }
 
+    signing_profile = (FpatchInjectProfile *)malloc(sizeof(*signing_profile));
+    jni_exports = (FpatchJniExportSet *)calloc(1, sizeof(*jni_exports));
+    if (!signing_profile || !jni_exports) {
+        snprintf(error, error_size, "Out of memory while preparing detach.");
+        goto done;
+    }
+
     source = zip_open(request->target, ZIP_RDONLY, &zip_error);
     if (!source) {
         snprintf(error, error_size, "Cannot open target APK (zip error %d): %s",
@@ -1723,11 +1730,11 @@ int fpatch_detach_apk(const FpatchDetachRequest *request,
         goto done;
     }
     if (!collect_removed_library_exports(source, request, library,
-                                         &jni_exports, error, error_size)) {
+                                         jni_exports, error, error_size)) {
         goto done;
     }
-    result->jni_exports = jni_exports.count;
-    result->detected_registered_jni = jni_exports.has_register_natives;
+    result->jni_exports = jni_exports->count;
+    result->detected_registered_jni = jni_exports->has_register_natives;
     target = zip_open(raw, ZIP_CREATE | ZIP_TRUNCATE, &zip_error);
     if (!target) {
         snprintf(error, error_size, "Cannot create detached APK (zip error %d): %s",
@@ -1751,7 +1758,7 @@ int fpatch_detach_apk(const FpatchDetachRequest *request,
                 goto done;
             }
             repair_stats = repair_dex(dex, dex_size, module_name, library,
-                                      &jni_exports);
+                                      jni_exports);
             result->repaired_load_calls += repair_stats.load_calls;
             result->repaired_native_calls += repair_stats.native_calls;
             result->skipped_native_calls += repair_stats.skipped_native_calls;
@@ -1792,11 +1799,11 @@ int fpatch_detach_apk(const FpatchDetachRequest *request,
     }
 
     if (request->sign) {
-        detach_profile(request, &signing_profile);
-        if (!fpatch_prepare_keystore(&signing_profile, output_directory,
+        detach_profile(request, signing_profile);
+        if (!fpatch_prepare_keystore(signing_profile, output_directory,
                                      keystore, sizeof(keystore),
                                      error, error_size) ||
-            !fpatch_align_and_sign_apk(raw, request->output, &signing_profile,
+            !fpatch_align_and_sign_apk(raw, request->output, signing_profile,
                                        keystore, error, error_size)) {
             goto done;
         }
@@ -1815,6 +1822,10 @@ done:
     if (source) {
         zip_discard(source);
     }
-    remove(raw);
+    if (raw[0]) {
+        remove(raw);
+    }
+    free(jni_exports);
+    free(signing_profile);
     return success;
 }

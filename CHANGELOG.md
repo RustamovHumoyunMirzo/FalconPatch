@@ -10,6 +10,14 @@
   `reflection-bridge` backend and the absence of unsafe raw `ArtMethod` patching.
 - Hardened reflection object access for concurrent calls, object parameters,
   array descriptors, and handle-id rollover.
+- Added declarative `dex_patches` to JSON/YAML injection profiles with exact
+  class/method descriptor matching and constant boolean, zero, null, or void
+  return actions.
+- Added target-DEX string replacement with equal MUTF-8/UTF-16 length checks,
+  bounds-checked parsing, fail-closed selector matching, and refreshed DEX SHA-1
+  signatures and Adler-32 checksums.
+- Added injection plan/result counts and focused profile/bytecode transformer
+  tests.
 
 ## 1.8.0 - 2026-09-02
 

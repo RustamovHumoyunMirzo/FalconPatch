@@ -16,6 +16,8 @@ typedef struct {
     char bootstrap_language[16];
     char target_abis[16][32];
     size_t target_abi_count;
+    size_t dex_methods_patched;
+    size_t dex_strings_replaced;
     int resigned;
 } FpatchInjectResult;
 

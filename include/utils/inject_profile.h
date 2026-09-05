@@ -8,6 +8,24 @@
 #define FPATCH_MAX_LUA_INPUTS 128
 #define FPATCH_MAX_ASSETS 128
 #define FPATCH_MAX_SPLITS 64
+#define FPATCH_MAX_DEX_PATCHES 128
+
+typedef enum {
+    FPATCH_DEX_PATCH_RETURN_TRUE = 1,
+    FPATCH_DEX_PATCH_RETURN_FALSE,
+    FPATCH_DEX_PATCH_RETURN_ZERO,
+    FPATCH_DEX_PATCH_RETURN_NULL,
+    FPATCH_DEX_PATCH_RETURN_VOID,
+    FPATCH_DEX_PATCH_REPLACE_STRING
+} FpatchDexPatchAction;
+
+typedef struct {
+    char target[512];
+    char method[512];
+    FpatchDexPatchAction action;
+    char string_from[1024];
+    char string_to[1024];
+} FpatchDexPatch;
 
 typedef struct {
     char path[FPATCH_PATH_MAX];
@@ -46,6 +64,8 @@ typedef struct {
     size_t asset_count;
     char splits[FPATCH_MAX_SPLITS][FPATCH_PATH_MAX];
     size_t split_count;
+    FpatchDexPatch dex_patches[FPATCH_MAX_DEX_PATCHES];
+    size_t dex_patch_count;
 } FpatchInjectProfile;
 
 void fpatch_profile_init(FpatchInjectProfile *profile);

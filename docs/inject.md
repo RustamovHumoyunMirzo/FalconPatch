@@ -44,6 +44,9 @@ the application process.
 Lua scripts, C extension descriptors, built-in modules, and the restricted
 runtime are documented separately in the [extension index](extensions/README.md).
 
+Static profile-driven bytecode changes are documented separately in the
+[DEX patch reference](dex-patches.md).
+
 ---
 
 [< Inspect Command](inspect.md) | [Detach Command >](detach.md)
