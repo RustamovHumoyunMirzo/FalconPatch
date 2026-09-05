@@ -69,6 +69,7 @@ add_library(falconpatch SHARED
     src/modules/gui_module.c
     src/modules/intent_module.c
     src/modules/jni_module.c
+    src/modules/method_hook.c
     src/modules/ui_module.c
 )
 

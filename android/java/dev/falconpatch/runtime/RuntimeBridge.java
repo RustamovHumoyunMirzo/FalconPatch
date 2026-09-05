@@ -37,6 +37,7 @@ import android.webkit.WebView;
 import java.io.InputStream;
 import java.io.StringReader;
 import java.lang.ref.WeakReference;
+import java.lang.reflect.Array;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -158,7 +159,8 @@ public final class RuntimeBridge {
             Class<?>[] parameters = parseParameterTypes(signature);
             Method method = findMethod(target, member, parameters, true);
             Object result = method.invoke(null, convertArgs(parameters, args));
-            return encodeResult(result, returnType(signature));
+            return dispatchHook(className, 0, member, signature,
+                    encodeResult(result, returnType(signature)));
         } catch (Throwable error) {
             return encodeError(error);
         }
@@ -180,14 +182,15 @@ public final class RuntimeBridge {
     public static String reflectObject(String unusedClassName, int objectId, String member,
                                        String signature, String[] args, String unusedValue) {
         try {
-            Object target = REFLECT_OBJECTS.get(objectId);
+            Object target = getReflectObject(objectId);
             if (target == null) {
                 return "E:object handle not found";
             }
             Class<?>[] parameters = parseParameterTypes(signature);
             Method method = findMethod(target.getClass(), member, parameters, false);
             Object result = method.invoke(target, convertArgs(parameters, args));
-            return encodeResult(result, returnType(signature));
+            return dispatchHook(target.getClass().getName(), objectId, member, signature,
+                    encodeResult(result, returnType(signature)));
         } catch (Throwable error) {
             return encodeError(error);
         }
@@ -220,7 +223,7 @@ public final class RuntimeBridge {
                                           String signature, String[] unusedArgs,
                                           String unusedValue) {
         try {
-            Object target = REFLECT_OBJECTS.get(objectId);
+            Object target = getReflectObject(objectId);
             if (target == null) {
                 return "E:object handle not found";
             }
@@ -234,7 +237,7 @@ public final class RuntimeBridge {
     public static String reflectSetObject(String unusedClassName, int objectId, String member,
                                           String signature, String[] unusedArgs, String value) {
         try {
-            Object target = REFLECT_OBJECTS.get(objectId);
+            Object target = getReflectObject(objectId);
             if (target == null) {
                 return "E:object handle not found";
             }
@@ -1140,9 +1143,13 @@ public final class RuntimeBridge {
             return resolveClass(name);
         }
         if (descriptor == '[') {
-            int start = index[0] - 1;
-            parseType(signature, index);
-            return Class.forName(signature.substring(start, index[0]).replace('/', '.'));
+            int dimensions = 1;
+            while (index[0] < signature.length() && signature.charAt(index[0]) == '[') {
+                dimensions++;
+                index[0]++;
+            }
+            Class<?> component = parseType(signature, index);
+            return Array.newInstance(component, new int[dimensions]).getClass();
         }
         throw new ClassNotFoundException("bad descriptor: " + descriptor);
     }
@@ -1192,6 +1199,15 @@ public final class RuntimeBridge {
 
     private static Object convertArg(Class<?> type, String raw) {
         String value = raw == null ? "" : raw;
+        if (value.startsWith("@")) {
+            try {
+                Object object = getReflectObject(Integer.valueOf(value.substring(1)));
+                if (object != null && (type == Object.class || type.isInstance(object))) {
+                    return object;
+                }
+                return null;
+            } catch (NumberFormatException ignored) {}
+        }
         if (type == String.class || type == CharSequence.class || type == Object.class) {
             return value;
         }
@@ -1219,16 +1235,25 @@ public final class RuntimeBridge {
         if (type == double.class || type == Double.class) {
             return Double.valueOf(value.length() == 0 ? "0" : value);
         }
-        if (value.startsWith("@")) {
-            try {
-                Object object = REFLECT_OBJECTS.get(Integer.valueOf(value.substring(1)));
-                if (object == null || !type.isInstance(object)) {
-                    return null;
-                }
-                return object;
-            } catch (NumberFormatException ignored) {}
-        }
         return null;
+    }
+
+    private static Object getReflectObject(int id) {
+        synchronized (REFLECT_OBJECTS) {
+            return REFLECT_OBJECTS.get(id);
+        }
+    }
+
+    private static String dispatchHook(String className, int objectId, String method,
+                                       String signature, String encodedResult) {
+        try {
+            String replacement = nativeDispatchHook(className, objectId, method,
+                    signature, encodedResult);
+            return replacement == null ? encodedResult : replacement;
+        } catch (Throwable error) {
+            Log.e(TAG, "Method hook dispatch failed; preserving original result.", error);
+            return encodedResult;
+        }
     }
 
     private static String encodeResult(Object result, Class<?> declaredType) {
@@ -1250,6 +1275,9 @@ public final class RuntimeBridge {
             return "S:" + result.toString();
         }
         synchronized (REFLECT_OBJECTS) {
+            if (nextReflectId <= 0) {
+                nextReflectId = 1;
+            }
             int id = nextReflectId++;
             REFLECT_OBJECTS.put(id, result);
             return "O:" + id + ":" + result.getClass().getName();
@@ -1625,4 +1653,7 @@ public final class RuntimeBridge {
     }
 
     private static native boolean nativeStart(Context context);
+    private static native String nativeDispatchHook(String className, int objectId,
+                                                    String method, String signature,
+                                                    String encodedResult);
 }

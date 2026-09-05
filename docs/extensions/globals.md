@@ -12,6 +12,8 @@ FalconPatch functions installed globally.
 | `fpatch.runtime()` | none | table with `version`, `abi`, `started`, `records`, and `assets` |
 | `fpatch.try(function, ...)` | Lua function plus optional arguments | `true, ...` on success or `false, error` |
 | `fpatch.log(priority, message)` | Android log priority integer and message string | no values |
+| `fpatch.hookMethod(class, method, [signature], callback)` | class name, method name, optional JVM signature, callback | hook handle |
+| `fpatch.hookCapabilities()` | none | active interception backend and limits |
 
 ## Example
 
@@ -32,6 +34,9 @@ info, `5` for warning, and `6` for error.
 Keep larger surfaces in their own modules with `require("ui")`,
 `require("events")`, `require("assets")`, `require("app")`,
 `require("intent")`, or `require("jni")`.
+
+See [method hooks](method-hooks.md) for callback semantics, hook handles, and
+backend limitations.
 
 ---
 

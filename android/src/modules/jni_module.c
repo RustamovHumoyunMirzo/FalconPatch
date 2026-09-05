@@ -494,7 +494,7 @@ static int object_id_from_table(lua_State *state, int index) {
     return id;
 }
 
-static void push_java_object(lua_State *state, int id, const char *class_name);
+void fp_lua_push_java_object(lua_State *state, int id, const char *class_name);
 
 static int push_reflect_result(lua_State *state, JNIEnv *env, jstring encoded) {
     const char *text;
@@ -529,7 +529,7 @@ static int push_reflect_result(lua_State *state, JNIEnv *env, jstring encoded) {
     } else if (strncmp(text, "O:", 2) == 0) {
         const char *separator = strchr(text + 2, ':');
         int id = separator ? atoi(text + 2) : 0;
-        push_java_object(state, id, separator ? separator + 1 : "java.lang.Object");
+        fp_lua_push_java_object(state, id, separator ? separator + 1 : "java.lang.Object");
     } else {
         lua_pushstring(state, text);
     }
@@ -644,7 +644,7 @@ static int lua_object_tostring(lua_State *state) {
     return 1;
 }
 
-static void push_java_object(lua_State *state, int id, const char *class_name) {
+void fp_lua_push_java_object(lua_State *state, int id, const char *class_name) {
     lua_newtable(state);
     lua_pushinteger(state, id);
     lua_setfield(state, -2, "id");

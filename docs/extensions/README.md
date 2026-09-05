@@ -10,6 +10,7 @@ shared table.
 - [Global `fpatch` API](globals.md)
 - [Embedded Lua scripts and modules](lua-scripts.md)
 - [Native Lua modules](native-lua-modules.md)
+- [Method hooks](method-hooks.md)
 
 ## Built-In Modules
 

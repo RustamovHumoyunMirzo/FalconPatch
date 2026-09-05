@@ -56,7 +56,7 @@ static int lua_host_version(lua_State *state) {
 #ifdef FPATCH_ANDROID_VERSION
     lua_pushstring(state, FPATCH_ANDROID_VERSION);
 #else
-    lua_pushliteral(state, "1.8.0");
+    lua_pushliteral(state, "1.9.0");
 #endif
     return 1;
 }
@@ -203,6 +203,7 @@ int fp_lua_open_restricted(lua_State *state) {
     lua_setfield(state, -2, "try");
     lua_setglobal(state, "fpatch");
     fp_lua_install_java_global(state);
+    fp_lua_install_method_hook_globals(state);
     return 1;
 }
 

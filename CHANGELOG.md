@@ -2,6 +2,15 @@
 
 ## 1.9.0 - 2026-09-05
 
+- Added `fpatch.hookMethod(...)` for synchronous in-process interception of
+  static and instance calls made through `Java.use(...)`.
+- Added optional JVM-signature matching, ordered hook chaining, enable/disable,
+  removal, call/failure statistics, and recursion protection.
+- Added `fpatch.hookCapabilities()` so scripts can detect the active
+  `reflection-bridge` backend and the absence of unsafe raw `ArtMethod` patching.
+- Hardened reflection object access for concurrent calls, object parameters,
+  array descriptors, and handle-id rollover.
+
 ## 1.8.0 - 2026-09-02
 
 - Added `fpatch inspect-module` for focused native module inspection by APK,

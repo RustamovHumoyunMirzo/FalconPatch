@@ -75,6 +75,11 @@ int fp_lua_register_module(const char *name, lua_CFunction open_function);
 void fp_lua_register_all_modules(lua_State *state);
 int fp_lua_run_archive(lua_State *state, const FpArchive *archive);
 void fp_lua_install_java_global(lua_State *state);
+void fp_lua_install_method_hook_globals(lua_State *state);
+void fp_lua_push_java_object(lua_State *state, int id, const char *class_name);
+jstring fp_method_hook_dispatch(JNIEnv *env, jstring class_name, jint object_id,
+                                jstring method_name, jstring signature,
+                                jstring encoded_result);
 
 int fp_open_jni_module(lua_State *state);
 int fp_open_gui_module(lua_State *state);

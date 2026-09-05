@@ -54,6 +54,11 @@ local events = require("events")
 
 fpatch.log(4, "device=" .. tostring(Build:getStatic("MODEL", "Ljava/lang/String;")))
 
+fpatch.hookMethod("com.example.DebugInfo", "buildLabel",
+    "()Ljava/lang/String;", function(_, original)
+        return original .. " [patched]"
+    end)
+
 local overlay = ui.addOverlay()
 overlay:width(ui.FILL_SCREEN_WIDTH)
 overlay:align(ui.TOP)
@@ -62,11 +67,6 @@ local button = overlay:addButton("Run check")
 button:setCornerRadius(8)
 button:background(0xff1e88e5)
 button:textColor(0xffffffff)
-events.onClick(button, "check:run")
-
-for _, event in ipairs(events.drain()) do
-    fpatch.log(4, event)
-end
 ```
 
 ## Documentation

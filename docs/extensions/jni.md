@@ -63,9 +63,15 @@ other reflected object handles can be passed as arguments.
 ```lua
 local Formatter = Java.use("java.text.SimpleDateFormat")
 local fmt = Formatter:new("(Ljava/lang/String;)V", "yyyy-MM-dd")
-local text = fmt:call("format", "(Ljava/lang/Object;)Ljava/lang/String;", Java.use("java.util.Date"):new("()V"))
+local date = Java.use("java.util.Date"):new("()V")
+local text = fmt:call("format", "(Ljava/util/Date;)Ljava/lang/String;", date)
+date:release()
 fmt:release()
 ```
+
+Calls made with `callStatic(...)` and object `call(...)` pass through registered
+[`fpatch.hookMethod(...)`](method-hooks.md) callbacks before their result is
+returned to Lua.
 
 ## `package_name()`
 
