@@ -202,6 +202,7 @@ int fp_lua_open_restricted(lua_State *state) {
     lua_pushcfunction(state, lua_host_try);
     lua_setfield(state, -2, "try");
     lua_setglobal(state, "fpatch");
+    fp_lua_install_java_global(state);
     return 1;
 }
 

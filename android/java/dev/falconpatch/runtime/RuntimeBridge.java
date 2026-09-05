@@ -37,6 +37,9 @@ import android.webkit.WebView;
 import java.io.InputStream;
 import java.io.StringReader;
 import java.lang.ref.WeakReference;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -57,6 +60,7 @@ public final class RuntimeBridge {
     private static boolean attempted;
     private static boolean started;
     private static boolean lifecycleRegistered;
+    private static Context applicationContext;
     private static WeakReference<Activity> currentActivity =
             new WeakReference<Activity>(null);
     private static View overlayView;
@@ -64,10 +68,13 @@ public final class RuntimeBridge {
     private static String pendingOverlayBody;
     private static int nextOverlayId = 1;
     private static int nextElementId = 100000;
+    private static int nextReflectId = 1;
     private static final Map<Integer, OverlayState> OVERLAYS =
             new HashMap<Integer, OverlayState>();
     private static final Map<Integer, ElementState> ELEMENTS =
             new HashMap<Integer, ElementState>();
+    private static final Map<Integer, Object> REFLECT_OBJECTS =
+            new HashMap<Integer, Object>();
 
     private RuntimeBridge() {}
 
@@ -81,6 +88,7 @@ public final class RuntimeBridge {
             if (appContext == null) {
                 appContext = context;
             }
+            applicationContext = appContext;
             registerLifecycle(appContext);
             ApplicationInfo info = appContext.getPackageManager().getApplicationInfo(
                     appContext.getPackageName(), PackageManager.GET_META_DATA);
@@ -130,6 +138,122 @@ public final class RuntimeBridge {
 
     public static void emitEvent(String event) {
         pushEvent(event == null ? "custom" : event);
+    }
+
+    public static String reflectClassExists(String className, int unusedObjectId,
+                                            String unusedMember, String unusedSignature,
+                                            String[] unusedArgs, String unusedValue) {
+        try {
+            resolveClass(className);
+            return "Z:true";
+        } catch (Throwable error) {
+            return "Z:false";
+        }
+    }
+
+    public static String reflectStatic(String className, int unusedObjectId, String member,
+                                       String signature, String[] args, String unusedValue) {
+        try {
+            Class<?> target = resolveClass(className);
+            Class<?>[] parameters = parseParameterTypes(signature);
+            Method method = findMethod(target, member, parameters, true);
+            Object result = method.invoke(null, convertArgs(parameters, args));
+            return encodeResult(result, returnType(signature));
+        } catch (Throwable error) {
+            return encodeError(error);
+        }
+    }
+
+    public static String reflectNew(String className, int unusedObjectId, String unusedMember,
+                                    String signature, String[] args, String unusedValue) {
+        try {
+            Class<?> target = resolveClass(className);
+            Class<?>[] parameters = parseParameterTypes(signature);
+            Constructor<?> constructor = target.getDeclaredConstructor(parameters);
+            constructor.setAccessible(true);
+            return encodeResult(constructor.newInstance(convertArgs(parameters, args)), target);
+        } catch (Throwable error) {
+            return encodeError(error);
+        }
+    }
+
+    public static String reflectObject(String unusedClassName, int objectId, String member,
+                                       String signature, String[] args, String unusedValue) {
+        try {
+            Object target = REFLECT_OBJECTS.get(objectId);
+            if (target == null) {
+                return "E:object handle not found";
+            }
+            Class<?>[] parameters = parseParameterTypes(signature);
+            Method method = findMethod(target.getClass(), member, parameters, false);
+            Object result = method.invoke(target, convertArgs(parameters, args));
+            return encodeResult(result, returnType(signature));
+        } catch (Throwable error) {
+            return encodeError(error);
+        }
+    }
+
+    public static String reflectGetStatic(String className, int unusedObjectId, String member,
+                                          String signature, String[] unusedArgs,
+                                          String unusedValue) {
+        try {
+            Field field = findField(resolveClass(className), member, true);
+            return encodeResult(field.get(null), signatureType(signature, field.getType()));
+        } catch (Throwable error) {
+            return encodeError(error);
+        }
+    }
+
+    public static String reflectSetStatic(String className, int unusedObjectId, String member,
+                                          String signature, String[] unusedArgs, String value) {
+        try {
+            Field field = findField(resolveClass(className), member, true);
+            Class<?> type = signatureType(signature, field.getType());
+            field.set(null, convertArg(type, value));
+            return "Z:true";
+        } catch (Throwable error) {
+            return encodeError(error);
+        }
+    }
+
+    public static String reflectGetObject(String unusedClassName, int objectId, String member,
+                                          String signature, String[] unusedArgs,
+                                          String unusedValue) {
+        try {
+            Object target = REFLECT_OBJECTS.get(objectId);
+            if (target == null) {
+                return "E:object handle not found";
+            }
+            Field field = findField(target.getClass(), member, false);
+            return encodeResult(field.get(target), signatureType(signature, field.getType()));
+        } catch (Throwable error) {
+            return encodeError(error);
+        }
+    }
+
+    public static String reflectSetObject(String unusedClassName, int objectId, String member,
+                                          String signature, String[] unusedArgs, String value) {
+        try {
+            Object target = REFLECT_OBJECTS.get(objectId);
+            if (target == null) {
+                return "E:object handle not found";
+            }
+            Field field = findField(target.getClass(), member, false);
+            Class<?> type = signatureType(signature, field.getType());
+            field.set(target, convertArg(type, value));
+            return "Z:true";
+        } catch (Throwable error) {
+            return encodeError(error);
+        }
+    }
+
+    public static String reflectRelease(String unusedClassName, int objectId, String unusedMember,
+                                        String unusedSignature, String[] unusedArgs,
+                                        String unusedValue) {
+        synchronized (REFLECT_OBJECTS) {
+            REFLECT_OBJECTS.remove(objectId);
+        }
+        return "Z:true";
     }
 
     public static boolean showOverlay(final Context context, final String title,
@@ -893,6 +1017,257 @@ public final class RuntimeBridge {
             out.append("...");
         }
         return out.toString();
+    }
+
+    private static Class<?> resolveClass(String name) throws ClassNotFoundException {
+        if (name == null || name.length() == 0) {
+            throw new ClassNotFoundException("empty class name");
+        }
+        if ("boolean".equals(name)) {
+            return boolean.class;
+        }
+        if ("byte".equals(name)) {
+            return byte.class;
+        }
+        if ("char".equals(name)) {
+            return char.class;
+        }
+        if ("short".equals(name)) {
+            return short.class;
+        }
+        if ("int".equals(name)) {
+            return int.class;
+        }
+        if ("long".equals(name)) {
+            return long.class;
+        }
+        if ("float".equals(name)) {
+            return float.class;
+        }
+        if ("double".equals(name)) {
+            return double.class;
+        }
+        if ("void".equals(name)) {
+            return void.class;
+        }
+        ClassLoader loader = RuntimeBridge.class.getClassLoader();
+        Context context = applicationContext;
+        if (context == null) {
+            context = currentContext();
+        }
+        if (context != null && context.getClassLoader() != null) {
+            loader = context.getClassLoader();
+        }
+        return Class.forName(name.replace('/', '.'), false, loader);
+    }
+
+    private static Class<?>[] parseParameterTypes(String signature)
+            throws ClassNotFoundException {
+        if (signature == null || signature.length() == 0) {
+            return new Class<?>[0];
+        }
+        int start = signature.indexOf('(');
+        int end = signature.indexOf(')');
+        if (start < 0 || end < start) {
+            return new Class<?>[0];
+        }
+        ArrayList<Class<?>> types = new ArrayList<Class<?>>();
+        int[] index = new int[] { start + 1 };
+        while (index[0] < end) {
+            types.add(parseType(signature, index));
+        }
+        return types.toArray(new Class<?>[types.size()]);
+    }
+
+    private static Class<?> returnType(String signature) throws ClassNotFoundException {
+        if (signature == null) {
+            return Object.class;
+        }
+        int end = signature.indexOf(')');
+        if (end < 0 || end + 1 >= signature.length()) {
+            return Object.class;
+        }
+        int[] index = new int[] { end + 1 };
+        return parseType(signature, index);
+    }
+
+    private static Class<?> signatureType(String signature, Class<?> fallback)
+            throws ClassNotFoundException {
+        if (signature == null || signature.length() == 0) {
+            return fallback == null ? Object.class : fallback;
+        }
+        int[] index = new int[] { 0 };
+        return parseType(signature, index);
+    }
+
+    private static Class<?> parseType(String signature, int[] index)
+            throws ClassNotFoundException {
+        char descriptor = signature.charAt(index[0]++);
+        if (descriptor == 'Z') {
+            return boolean.class;
+        }
+        if (descriptor == 'B') {
+            return byte.class;
+        }
+        if (descriptor == 'C') {
+            return char.class;
+        }
+        if (descriptor == 'S') {
+            return short.class;
+        }
+        if (descriptor == 'I') {
+            return int.class;
+        }
+        if (descriptor == 'J') {
+            return long.class;
+        }
+        if (descriptor == 'F') {
+            return float.class;
+        }
+        if (descriptor == 'D') {
+            return double.class;
+        }
+        if (descriptor == 'V') {
+            return void.class;
+        }
+        if (descriptor == 'L') {
+            int semicolon = signature.indexOf(';', index[0]);
+            if (semicolon < 0) {
+                throw new ClassNotFoundException("bad object descriptor");
+            }
+            String name = signature.substring(index[0], semicolon).replace('/', '.');
+            index[0] = semicolon + 1;
+            return resolveClass(name);
+        }
+        if (descriptor == '[') {
+            int start = index[0] - 1;
+            parseType(signature, index);
+            return Class.forName(signature.substring(start, index[0]).replace('/', '.'));
+        }
+        throw new ClassNotFoundException("bad descriptor: " + descriptor);
+    }
+
+    private static Method findMethod(Class<?> type, String name, Class<?>[] parameters,
+                                     boolean requireStatic) throws NoSuchMethodException {
+        Class<?> cursor = type;
+        while (cursor != null) {
+            try {
+                Method method = cursor.getDeclaredMethod(name, parameters);
+                boolean isStatic = java.lang.reflect.Modifier.isStatic(method.getModifiers());
+                if (isStatic == requireStatic) {
+                    method.setAccessible(true);
+                    return method;
+                }
+            } catch (NoSuchMethodException ignored) {}
+            cursor = cursor.getSuperclass();
+        }
+        throw new NoSuchMethodException(name);
+    }
+
+    private static Field findField(Class<?> type, String name, boolean requireStatic)
+            throws NoSuchFieldException {
+        Class<?> cursor = type;
+        while (cursor != null) {
+            try {
+                Field field = cursor.getDeclaredField(name);
+                boolean isStatic = java.lang.reflect.Modifier.isStatic(field.getModifiers());
+                if (isStatic == requireStatic) {
+                    field.setAccessible(true);
+                    return field;
+                }
+            } catch (NoSuchFieldException ignored) {}
+            cursor = cursor.getSuperclass();
+        }
+        throw new NoSuchFieldException(name);
+    }
+
+    private static Object[] convertArgs(Class<?>[] parameterTypes, String[] raw) {
+        Object[] args = new Object[parameterTypes.length];
+        for (int i = 0; i < parameterTypes.length; i++) {
+            String value = raw != null && i < raw.length ? raw[i] : "";
+            args[i] = convertArg(parameterTypes[i], value);
+        }
+        return args;
+    }
+
+    private static Object convertArg(Class<?> type, String raw) {
+        String value = raw == null ? "" : raw;
+        if (type == String.class || type == CharSequence.class || type == Object.class) {
+            return value;
+        }
+        if (type == boolean.class || type == Boolean.class) {
+            return Boolean.valueOf("true".equalsIgnoreCase(value) || "1".equals(value));
+        }
+        if (type == byte.class || type == Byte.class) {
+            return Byte.valueOf(value.length() == 0 ? "0" : value);
+        }
+        if (type == char.class || type == Character.class) {
+            return Character.valueOf(value.length() == 0 ? '\0' : value.charAt(0));
+        }
+        if (type == short.class || type == Short.class) {
+            return Short.valueOf(value.length() == 0 ? "0" : value);
+        }
+        if (type == int.class || type == Integer.class) {
+            return Integer.valueOf(value.length() == 0 ? "0" : value);
+        }
+        if (type == long.class || type == Long.class) {
+            return Long.valueOf(value.length() == 0 ? "0" : value);
+        }
+        if (type == float.class || type == Float.class) {
+            return Float.valueOf(value.length() == 0 ? "0" : value);
+        }
+        if (type == double.class || type == Double.class) {
+            return Double.valueOf(value.length() == 0 ? "0" : value);
+        }
+        if (value.startsWith("@")) {
+            try {
+                Object object = REFLECT_OBJECTS.get(Integer.valueOf(value.substring(1)));
+                if (object == null || !type.isInstance(object)) {
+                    return null;
+                }
+                return object;
+            } catch (NumberFormatException ignored) {}
+        }
+        return null;
+    }
+
+    private static String encodeResult(Object result, Class<?> declaredType) {
+        if (declaredType == void.class || result == null) {
+            return "N";
+        }
+        if (result instanceof Boolean) {
+            return "Z:" + result.toString();
+        }
+        if (result instanceof Byte || result instanceof Short ||
+                result instanceof Integer || result instanceof Long ||
+                result instanceof Character) {
+            return "I:" + result.toString();
+        }
+        if (result instanceof Float || result instanceof Double) {
+            return "D:" + result.toString();
+        }
+        if (result instanceof String || result instanceof CharSequence) {
+            return "S:" + result.toString();
+        }
+        synchronized (REFLECT_OBJECTS) {
+            int id = nextReflectId++;
+            REFLECT_OBJECTS.put(id, result);
+            return "O:" + id + ":" + result.getClass().getName();
+        }
+    }
+
+    private static String encodeError(Throwable error) {
+        Throwable actual = error;
+        if (actual instanceof java.lang.reflect.InvocationTargetException &&
+                ((java.lang.reflect.InvocationTargetException) actual).getTargetException() != null) {
+            actual = ((java.lang.reflect.InvocationTargetException) actual).getTargetException();
+        }
+        String message = actual.getClass().getSimpleName();
+        if (actual.getMessage() != null && actual.getMessage().length() > 0) {
+            message += ": " + actual.getMessage();
+        }
+        Log.e(TAG, "Reflection call failed.", actual);
+        return "E:" + message;
     }
 
     private static int dp(Context context, int value) {

@@ -9,6 +9,64 @@ local jni = require("jni")
 The module intentionally exposes a narrow JNI surface. Java exceptions are
 cleared and converted to Lua failure results instead of escaping into the app.
 
+## `Java.use(class_name)`
+
+`Java.use(...)` is installed globally for quick reflection work, and the same
+factory is also available as `require("jni").use(...)`. It resolves classes
+through the app class loader when possible, can call private members via Java
+reflection, and converts Java failures into `nil, error`.
+
+```lua
+local Build = Java.use("android.os.Build")
+fpatch.log(4, "device=" .. tostring(Build:getStatic("MODEL", "Ljava/lang/String;")))
+
+local DebugInfo = Java.use("com.example.DebugInfo")
+if DebugInfo:exists() then
+    local label, err = DebugInfo:callStatic(
+        "buildLabel",
+        "(Ljava/lang/String;I)Ljava/lang/String;",
+        "local",
+        42)
+    if label then
+        fpatch.log(4, label)
+    else
+        fpatch.log(6, err)
+    end
+end
+```
+
+Class handles:
+
+| Method | Result |
+| --- | --- |
+| `exists()` | `true` when the class resolves |
+| `callStatic(name, signature, ...)` | reflected static method result |
+| `getStatic(name, signature)` | static field value |
+| `setStatic(name, signature, value)` | `true` or `nil, error` |
+| `new(signature, ...)` | reflected object handle |
+
+Object handles:
+
+| Method | Result |
+| --- | --- |
+| `call(name, signature, ...)` | reflected instance method result |
+| `get(name, signature)` | instance field value |
+| `set(name, signature, value)` | `true` or `nil, error` |
+| `release()` | drops FalconPatch's stored object reference |
+| `toString()` | local Lua handle label |
+
+Use JVM descriptors for signatures: `I` for `int`, `Z` for `boolean`,
+`J` for `long`, `D` for `double`, `Ljava/lang/String;` for strings, and method
+forms such as `(Ljava/lang/String;)Z`. Primitive values, strings, booleans, and
+other reflected object handles can be passed as arguments.
+
+```lua
+local Formatter = Java.use("java.text.SimpleDateFormat")
+local fmt = Formatter:new("(Ljava/lang/String;)V", "yyyy-MM-dd")
+local text = fmt:call("format", "(Ljava/lang/Object;)Ljava/lang/String;", Java.use("java.util.Date"):new("()V"))
+fmt:release()
+```
+
 ## `package_name()`
 
 Returns the Android application package name as a string. Returns `nil` when
@@ -80,6 +138,9 @@ Call selected no-argument static methods:
 | `call_static_boolean(class_name, method_name)` | `()Z` |
 
 On failure, call helpers return `nil, error`.
+
+For methods with parameters, instance methods, private members, or object
+handles, prefer `Java.use(...)`.
 
 ---
 

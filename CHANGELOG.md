@@ -1,5 +1,7 @@
 # Changelog
 
+## 1.9.0 - 2026-09-05
+
 ## 1.8.0 - 2026-09-02
 
 - Added `fpatch inspect-module` for focused native module inspection by APK,
@@ -16,6 +18,9 @@
   and a protected-call helper.
 - Added convenience aliases and an `app.info()` snapshot across built-in Lua
   modules.
+- Added global `Java.use(...)` and `jni.use(...)` reflection handles for static
+  calls, constructors, private field access, instance calls, and object handle
+  release.
 - Moved example profile references to `examples/` across docs and tests.
 - Updated project, CLI, and artifact documentation version references to
   `1.8.0`.

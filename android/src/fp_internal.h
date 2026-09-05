@@ -74,6 +74,7 @@ int fp_lua_open_restricted(lua_State *state);
 int fp_lua_register_module(const char *name, lua_CFunction open_function);
 void fp_lua_register_all_modules(lua_State *state);
 int fp_lua_run_archive(lua_State *state, const FpArchive *archive);
+void fp_lua_install_java_global(lua_State *state);
 
 int fp_open_jni_module(lua_State *state);
 int fp_open_gui_module(lua_State *state);

@@ -13,7 +13,7 @@ shared table.
 
 ## Built-In Modules
 
-- [`jni`](jni.md): selected Android and Java access
+- [`jni`](jni.md): selected Android/JNI access and `Java.use(...)` reflection
 - [`app`](app.md): package, SDK, foreground, and activity state
 - [`assets`](assets.md): injected asset lookup, reads, and UI handles
 - [`ui`](ui.md): toast, overlays, XML loading, and view inspection

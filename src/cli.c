@@ -4,7 +4,7 @@
 #include <string.h>
 
 #ifndef FPATCH_VERSION
-#define FPATCH_VERSION "1.8.0"
+#define FPATCH_VERSION "1.9.0"
 #endif
 
 static Command g_commands[MAX_CMDS];

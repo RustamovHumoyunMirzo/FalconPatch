@@ -45,11 +45,14 @@ fpatch detach --target app-fpatch.apk --so mylib --abi arm64-v8a --out app-detac
 
 ### Lua Scripting
 
-Lua entry scripts can use rich built-in Android modules for app state, view inspection, overlays, XML UI loading, event polling, and intents:
+Lua entry scripts can use rich built-in Android modules:
 
 ```lua
+local Build = Java.use("android.os.Build")
 local ui = require("ui")
 local events = require("events")
+
+fpatch.log(4, "device=" .. tostring(Build:getStatic("MODEL", "Ljava/lang/String;")))
 
 local overlay = ui.addOverlay()
 overlay:width(ui.FILL_SCREEN_WIDTH)

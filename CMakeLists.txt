@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(FalconPatch
-    VERSION 1.8.0
+    VERSION 1.9.0
     LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
